@@ -373,7 +373,7 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 |---|---|---|
 | 本地 | `knowledge.local.enabled`（默认 true，`dir: knowledge`） | 产物就在 `out/knowledge/`，`dir` 可改绝对路径 |
 | 本地·向量（子选项） | `knowledge.local.vector.enabled`（需 `pip install chromadb`） | 开启后由 CLI `vectorize` 建本地语义检索库 |
-| 腾讯 ima | `knowledge.ima.enabled` + `api_key` + `client_id` | 自动上传脱敏 .md 到指定知识库；未配 Key 时导出 `out/ima_export/` 供手动导入 |
+| 腾讯 ima | `knowledge.ima.enabled` + `api_key` + `client_id` | 自动上传脱敏 .md 到指定知识库；未配 Key 时导出 `out/ima_export/` 供手动导入；配了无效 Key（认证失败/网络错误）明确报错并返回退出码 1 |
 
 ```bash
 # 一键同步（按配置）
