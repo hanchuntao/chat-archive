@@ -1752,6 +1752,261 @@ def search_messages(msgs: list[dict], query: str = "", sender: str = "", date_fr
 
 
 # ---------------------------------------------------------------- 输出
+# ---------------------------------------------------------------- 第3轮吸收（P1×4 + P2×4）
+LEVEL_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+FUNNEL_STAGES = [
+    ("成交", ["已付款", "付好了", "到账", "支付成功", "付款成功", "红包收到", "收到了钱"]),
+    ("下单未付款", ["拍下了", "拍了", "下单了", "下单"]),
+    ("催拍/付款咨询", ["怎么付款", "如何付款", "付款方式", "现在买", "马上订", "马上买"]),
+    ("询价", ["多少钱", "价格", "报价", "便宜", "优惠", "折扣", "库存", "现货", "有货", "怎么卖"]),
+]
+FUNNEL_RANK = {name: i for i, (name, _) in enumerate(FUNNEL_STAGES)}
+
+
+def funnel_analysis(sessions: list[dict]) -> list[dict]:
+    """会话阶段漏斗（P2-18）：咨询→询价→催拍→下单未付款→成交 + 卡点统计。
+
+    取会话内客户消息最后命中的最高阶段词；卡点即客户停在未成交的哪个环节。
+    """
+    out = []
+    for sess in sessions:
+        stage, trigger = "咨询", ""
+        for m in sorted(sess["msgs"], key=lambda x: x["sent_at"]):
+            if m["is_staff"]:
+                continue
+            for name, kws in FUNNEL_STAGES:
+                if any(k in m["content"] for k in kws):
+                    stage = name
+                    trigger = f"{m['sent_at'].strftime('%H:%M')} {m['content'][:28]}"
+                    break
+        out.append({"session": sess["start"].isoformat(), "customer": sess["customer"] or "",
+                    "stage": stage, "trigger": trigger, "msgs": len(sess["msgs"])})
+    out.sort(key=lambda r: FUNNEL_RANK.get(r["stage"], 4))
+    return out
+
+
+def level_problems(insights: list[dict], cfg: dict | None = None) -> list[dict]:
+    """问题分级量化 P0-P3（P2-19）：可解释阈值打标签，老板先看最该解决的。"""
+    lp = (cfg or {}).get("problem_level", {}) if isinstance(cfg, dict) else {}
+    p0_n = int(lp.get("p0_count", 10)); p1_n = int(lp.get("p1_count", 5)); p2_n = int(lp.get("p2_count", 3))
+    p0_kw = lp.get("p0_kw", ["投诉", "差评"]); p1_kw = lp.get("p1_kw", ["退款", "赔偿", "损失"])
+    out = []
+    for r in insights:
+        c = r["count"]
+        txt = " ".join(r.get("evidence", []))
+        if c >= p0_n or any(k in txt for k in p0_kw):
+            level, reason = "P0", f"≥{p0_n} 条或含投诉/差评词（当前 {c} 条）"
+        elif c >= p1_n or any(k in txt for k in p1_kw):
+            level, reason = "P1", f"≥{p1_n} 条或含退款/赔偿词（当前 {c} 条）"
+        elif c >= p2_n:
+            level, reason = "P2", f"≥{p2_n} 条（当前 {c} 条）"
+        else:
+            level, reason = "P3", f"<{p2_n} 条（当前 {c} 条）"
+        out.append({"topic": r["topic"], "count": c, "level": level, "reason": reason,
+                    "top_pain": ", ".join(r["top_pain"])})
+    out.sort(key=lambda r: (LEVEL_RANK.get(r["level"], 9), -r["count"]))
+    return out
+
+
+def faq_draft(kb_entries: list[dict], min_freq: int = 2) -> tuple[str, list[dict]]:
+    """已解决高重复问题 → FAQ 草稿（P2-20）：Direct Answer → Details → Related + 搜索词表。
+
+    消费知识库 qa 配对（q=客户问题、a=标准答复）；默认人工复核后再入库。
+    """
+    q_map: dict[str, list[tuple[str, str]]] = {}
+    for e in kb_entries:
+        cat = e.get("category", "")
+        for qa in e.get("qa", []):
+            q_map.setdefault(cat, []).append((qa.get("q", ""), qa.get("a", "")))
+    kw_map = dict(TOPICS)
+    lines = ["# FAQ 草稿（AI 起草 · 人工复核后再入库）", "",
+              "> 由高频已解决问答自动起草；发布前请逐条核对口径，并按需补充最新价格/库存。", ""]
+    terms: list[dict] = []
+    for cat, pairs in sorted(q_map.items(), key=lambda kv: -len(kv[1])):
+        if len(pairs) < min_freq:
+            continue
+        direct = pairs[0][1] or "（暂无已核实标准答复，请补充）"
+        details = [q for q, _ in pairs[:3]]
+        related = sorted({q for q, _ in pairs[1:4]})
+        lines += [f"## FAQ：{cat}", "", f"**直接回答**：{direct}", "", "**详情（客户原话，已脱敏）**：", ""]
+        lines += [f"- {d}" for d in details] + [""]
+        if related:
+            lines += ["**相关问题**：", ""] + [f"- {r}" for r in related] + [""]
+        terms.append({"topic": cat,
+                      "keywords": ", ".join([cat] + list(kw_map.get(cat, []))),
+                      "frequency": len(pairs), "draft_ref": f"FAQ：{cat}"})
+    if not terms:
+        lines.append("（高频已解决问答不足 2 条/话题，暂无可起草的 FAQ；继续积累会话后自动生成）")
+    return "\n".join(lines), terms
+
+
+def _bigrams(text: str) -> list[str]:
+    s = re.sub(r"\s+", "", text or "").lower()
+    if len(s) < 2:
+        return list(s)
+    return [s[i:i + 2] for i in range(len(s) - 1)]
+
+
+def bm25_search(msgs: list[dict], query: str, limit: int = 50, time_decay: float = 0.95) -> list[dict]:
+    """bigram-BM25 + 时间衰减的混合检索排序（P2-21）；零依赖中文 bigram 打分。"""
+    qg = set(_bigrams(query))
+    if not qg:
+        return []
+    now = datetime.now()
+    scored = []
+    for m in msgs:
+        mg = set(_bigrams(m["content"]))
+        hit = len(qg & mg)
+        if not hit:
+            continue
+        days = max(0, (now - m["sent_at"]).days)
+        score = round(hit / len(qg) * 100 * (time_decay ** days), 1)
+        scored.append((score, m))
+    scored.sort(key=lambda x: -x[0])
+    out = []
+    for score, m in scored[:limit]:
+        out.append({"time": m["sent_at"].isoformat(), "sender": m["sender"],
+                    "content": m["content"][:200], "group": m["group_id"], "bm25": score})
+    return out
+
+
+def session_timeline(sessions: list[dict]) -> list[dict]:
+    """客户会话时间线节点（P1-11）：客户提问/员工回复交替 + 阶段触发词 + 回复耗时。"""
+    out = []
+    for sess in sessions:
+        nodes, pend_at = [], None
+        for m in sorted(sess["msgs"], key=lambda x: x["sent_at"]):
+            stage_hit, latency = "", None
+            if not m["is_staff"]:
+                for name, kws in FUNNEL_STAGES:
+                    if any(k in m["content"] for k in kws):
+                        stage_hit = name
+                        break
+                pend_at = m["sent_at"]
+            else:
+                if pend_at is not None:
+                    latency = round((m["sent_at"] - pend_at).total_seconds() / 60, 1)
+                pend_at = None
+            nodes.append({"time": m["sent_at"].strftime("%H:%M"), "sender": m["sender"],
+                          "is_staff": m["is_staff"], "content": m["content"][:80],
+                          "stage": stage_hit, "latency_min": latency})
+        out.append({"session": sess["start"].isoformat(), "customer": sess["customer"] or "",
+                    "group": sess["group"], "nodes": nodes})
+    return out
+
+
+MEDIA_PLACEHOLDERS = {"[图片]": "image", "[表情]": "emoji", "[语音]": "voice",
+                      "[视频]": "video", "[文件]": "file", "[链接]": "link", "[红包]": "redpack"}
+
+
+def media_manifest(input_path: str) -> list[dict]:
+    """多模态占位与媒体归档清单（P1-12）：直接扫描输入文件文本中的 [图片]/[语音] 等占位。
+
+    占位消息在解析阶段已被 is_noise 过滤，故从原始文件扫（TXT/MD/CSV/JSON 均可命中）。
+    """
+    p = Path(input_path)
+    files = [p] if p.is_file() else sorted([f for f in p.rglob("*") if f.is_file()])
+    rows, seen = [], set()
+    for f in files:
+        if f.suffix.lower() not in (".txt", ".md", ".csv", ".json", ".jsonl"):
+            continue
+        try:
+            raw = f.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line in raw.splitlines():
+            line_s = line.strip()
+            for ph, kind in MEDIA_PLACEHOLDERS.items():
+                if ph in line_s:
+                    key = (f.name, line_s)
+                    if key in seen:
+                        break
+                    seen.add(key)
+                    rows.append({"file": f.name, "line": line_s[:50],
+                                 "kind": kind, "placeholder": ph,
+                                 "note": "需上游导出媒体文件 / 语音转写后补全内容"})
+                    break
+    return rows
+
+
+def clean_training(train_lines: str, rules: list[dict]) -> tuple[list[dict], list[dict]]:
+    """训练样本级清洗（P1-15）：去重 / 低质过短过滤 / 红线词过滤 / 长度截断。"""
+    seen: set[tuple[str, str]] = set()
+    out, report = [], []
+    for l in train_lines.splitlines():
+        l = l.strip()
+        if not l:
+            continue
+        try:
+            d = json.loads(l)
+        except Exception:
+            continue
+        q, a = (d.get("input") or "").strip(), (d.get("output") or "").strip()
+        if not q or not a:
+            continue
+        key = (q, a)
+        if key in seen:
+            report.append({"rule": "去重", "sample": q[:20]})
+            continue
+        if any(re.search(r["pattern"], q + a) for r in rules):
+            report.append({"rule": "命中红线词", "sample": q[:20]})
+            continue
+        if len(q) < 4 or len(a) < 4:
+            report.append({"rule": "低质过短", "sample": q[:20]})
+            continue
+        d["output"] = a[:2000]
+        seen.add(key)
+        out.append(d)
+    return out, report
+
+
+def _read_csv_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        with open(path, encoding="utf-8", newline="") as f:
+            return list(csv.DictReader(f))
+    except Exception:
+        return []
+
+
+def trend_compare(out: Path, run_dir: Path) -> str:
+    """周期环比报告（P1-16）：最近两期关键指标对比 + 新冒头话题检测（需历史时间戳目录 ≥2 期）。"""
+    snaps = sorted([d for d in out.iterdir()
+                    if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}_\d{6}_\d{6}$", d.name)])
+    if len(snaps) < 2:
+        return "# 周期环比报告\n\n（累计结果目录不足 2 期，环比暂无法计算；下期运行后自动生成）\n"
+
+    def _metric(d: Path) -> dict:
+        st = _read_csv_rows(d / "effective_stats.csv")
+        asr = _read_csv_rows(d / "assessment.csv")
+        fup = _read_csv_rows(d / "followups.csv")
+        return {"员工消息": sum(int(r.get("sent", 0) or 0) for r in st),
+                "有效回复": sum(int(r.get("effective", 0) or 0) for r in st),
+                "平均得分": round(sum(int(r.get("final_score", 0) or 0) for r in asr) / len(asr), 1) if asr else 0,
+                "违规次数": sum(int(r.get("violation_count", 0) or 0) for r in asr),
+                "待跟进": len(fup)}
+
+    prev = snaps[-2]
+    c, p = _metric(run_dir), _metric(prev)
+    lines = ["# 周期环比报告（P1-16）", "",
+             f"- 本期：{run_dir.name} ｜ 上期：{prev.name}", "",
+             "| 指标 | 上期 | 本期 | 变化 |", "|---|---|---|---|"]
+    for k in ("员工消息", "有效回复", "平均得分", "违规次数", "待跟进"):
+        dv = c[k] - p[k]
+        arrow = "↑" if dv > 0 else ("↓" if dv < 0 else "→")
+        lines.append(f"| {k} | {p[k]} | {c[k]} | {arrow} {dv:+g} |")
+    c_top = {r["topic"] for r in _read_csv_rows(run_dir / "insight_level.csv")}
+    p_top = {r["topic"] for r in _read_csv_rows(prev / "insight_level.csv")}
+    new_top = sorted(c_top - p_top)
+    if new_top:
+        lines += ["", "**本期新冒头问题（上期未出现）**：", ""]
+        lines += [f"- {t}" for t in new_top] + [""]
+    else:
+        lines += ["", "本期无新冒头问题（与上期话题集一致）。", ""]
+    return "\n".join(lines)
+
+
 def _customer_view(msgs: list[dict], all_mode: bool) -> list[dict]:
     """--staff all 时，带问句的消息视为客户消息（与 insight/dialogues 一致），供会话级经营分析使用。
 
@@ -1858,8 +2113,8 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 def main():
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
-                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync"],
-                    help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）")
+                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft"],
+                    help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）；kb-draft=仅生成 FAQ 草稿")
     ap.add_argument("--input", default="", help="输入文件或目录（明文或加密备份，kb-sync 无需；缺省读 config.json defaults.input）")
     ap.add_argument("--staff", default="", help="员工名单三种写法：逗号名单（张三,李四）、all（全部发送人视为员工）、名单文件路径（每行一个）；不传时所有人视为客户")
     ap.add_argument("--all-staff", action="store_true", help="等同 --staff all（全部发送人视为员工）")
@@ -1880,6 +2135,8 @@ def main():
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
     ap.add_argument("--search", default="", help="正则批量检索关键词（业务层多面过滤，输出 search.csv）")
+    ap.add_argument("--search-bm25", action="store_true",
+                    help="检索排序用 bigram-BM25 + 时间衰减（P2-21 混合检索），默认正则命中即出")
     args = ap.parse_args()
 
     _cfg = load_config()
@@ -1889,7 +2146,7 @@ def main():
     if not args.out or args.out == "chat_archive_output":
         args.out = str(_def.get("out") or "chat_archive_output").strip()
 
-    if args.task in ("all", "stats", "daily", "summary", "kb", "assess", "convert") and not args.input:
+    if args.task in ("all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-draft") and not args.input:
         ap.error("缺少输入：请传 --input，或在 config.json 的 defaults.input 配置默认路径（零参数全流程）")
 
     out = Path(args.out)
@@ -1958,6 +2215,8 @@ def main():
             m["content"] = m["content"].replace(m["sender"], mask_identity(m["sender"], m["is_staff"], staff_ids, anon))
             m["sender"] = anon.get(m["sender"], m["sender"])
         print("[提示] --mask-all 已启用：全链路脱敏（PII 掩码 + 员工/客户匿名化），所有产物均不含明文身份与敏感信息")
+
+    errors: list[str] = []
 
     use_llm = args.llm if args.llm is not None else llm_configured()
     if use_llm:
@@ -2082,6 +2341,31 @@ def main():
         ai_n = len(ai_kb)
     (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
     (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
+    # 训练样本级清洗（P1-15）：去重 / 低质过滤 / 红线词过滤 → training_clean.jsonl
+    try:
+        clean_rows, clean_report = clean_training(train, rules)
+        if clean_rows:
+            (kb_dir / "training_clean.jsonl").write_text(
+                "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
+        write_csv(kb_dir / "training_clean_report.csv", clean_report)
+        print(f"[4/17] 训练集清洗 → training_clean.jsonl（保留 {len(clean_rows)}/{len([l for l in train.splitlines() if l])} 条）")
+    except Exception as e:
+        errors.append(f"训练集清洗失败: {e}")
+        print(f"[错误] 训练集清洗失败：{e}")
+    # FAQ 草稿（P2-20）：高频已解决问答 → Direct Answer/Details/Related + 搜索词表
+    try:
+        _cfg20 = load_config()
+        faq_min = int((_cfg20.get("faq", {}).get("min_freq", 2)) if isinstance(_cfg20, dict) else 2)
+        draft_md, terms = faq_draft(entries, faq_min)
+        (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
+        write_csv(kb_dir / "faq_search_terms.csv", terms)
+        print(f"[4/17] FAQ 草稿 → faq_drafts.md（{len(terms)} 个话题，人工复核后入库）")
+    except Exception as e:
+        errors.append(f"FAQ 草稿失败: {e}")
+        print(f"[错误] FAQ 草稿失败：{e}")
+    if args.task == "kb-draft":
+        print(f"\nkb-draft 完成：FAQ 草稿 → {kb_dir.resolve()}")
+        return
     print(f"[4/17] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
@@ -2147,6 +2431,21 @@ def main():
         else:
             ins_md.append("（本期无客户痛点消息）")
         (run_dir / "insight.md").write_text("\n".join(ins_md) + "\n", encoding="utf-8")
+        # 问题分级量化（P2-19）：可解释阈值 P0-P3，老板先看最该解决的
+        try:
+            _cfg8 = load_config()
+            lvl = level_problems(insights, _cfg8 if isinstance(_cfg8, dict) else None)
+            write_csv(run_dir / "insight_level.csv", lvl)
+            lv_md = ["", "## 问题分级（P0-P3，按处理优先级）", "",
+                     "| 级别 | 话题 | 条数 | 判定理由 |", "|---|---|---|---|"]
+            for r in lvl:
+                lv_md.append(f"| {r['level']} | {r['topic']} | {r['count']} | {r['reason']} |")
+            (run_dir / "insight.md").write_text(
+                (run_dir / "insight.md").read_text(encoding="utf-8") + "\n".join(lv_md) + "\n", encoding="utf-8")
+            print(f"[8/17] 问题分级 → insight_level.csv（P0×{sum(1 for r in lvl if r['level']=='P0')} P1×{sum(1 for r in lvl if r['level']=='P1')}）")
+        except Exception as e:
+            errors.append(f"问题分级失败: {e}")
+            print(f"[错误] 问题分级失败：{e}")
         ai_ins = ""
         if use_llm:
             try:
@@ -2224,6 +2523,24 @@ def main():
         sop_cfg = cfg10.get("assessment", {}).get("sop", {}) if isinstance(cfg10, dict) else {}
         sop_rows = sop_compliance(cust_msgs, sop_cfg)
         write_csv(run_dir / "sop_compliance.csv", sop_rows)
+        # 会话阶段漏斗（P2-18）+ 会话时间线（P1-11）
+        write_csv(run_dir / "funnel.csv", funnel_analysis(sessions))
+        (run_dir / "timeline.json").write_text(
+            json.dumps(session_timeline(sessions), ensure_ascii=False, indent=1), encoding="utf-8")
+        fun_rows = _read_csv_rows(run_dir / "funnel.csv")
+        fun_md = ["# 销售漏斗与卡点（P2-18）", "",
+                  "> 会话阶段：咨询→询价→催拍→下单未付款→成交；卡点=客户停在未成交环节。", "",
+                  "| 阶段 | 会话数 | 代表客户 | 最近触发 |", "|---|---|---|---|"]
+        for s_name, _ in FUNNEL_STAGES:
+            hits = [r for r in fun_rows if r["stage"] == s_name]
+            if hits:
+                rep = "、".join(r["customer"] for r in hits[:3])
+                trig = hits[-1]["trigger"][:24]
+                fun_md.append(f"| {s_name} | {len(hits)} | {rep} | {trig} |")
+        open_st = [r for r in fun_rows if r["stage"] != "成交"]
+        if open_st:
+            fun_md += ["", f"**卡点提示**：{len(open_st)} 个会话未成交（询价 {sum(1 for r in open_st if r['stage']=='询价')}、催拍/付款咨询 {sum(1 for r in open_st if r['stage']=='催拍/付款咨询')}、下单未付款 {sum(1 for r in open_st if r['stage']=='下单未付款')}）", ""]
+        (run_dir / "funnel.md").write_text("\n".join(fun_md) + "\n", encoding="utf-8")
         sop_md = ["# 销售 SOP 动作窗合规（第2轮吸收④）", "",
                   f"- 规则：首响 ≤{sop_cfg.get('first_reply_sec', 20)}s；问价后 {sop_cfg.get('followup_min', 15)}min 内跟进；"
                   f"犹豫后 {sop_cfg.get('retention_min', 2)}min 内挽留；意向 {sop_cfg.get('prompt_min', 10)}min 内催拍", ""]
@@ -2233,7 +2550,7 @@ def main():
         else:
             sop_md.append("（本期无 SOP 违规）")
         (run_dir / "sop_compliance.md").write_text("\n".join(sop_md) + "\n", encoding="utf-8")
-        print(f"[10/17] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv")
+        print(f"[10/17] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv / funnel.csv / timeline.json")
     except Exception as e:
         errors.append(f"经营分析失败: {e}")
         print(f"[错误] 经营分析失败：{e}")
@@ -2243,7 +2560,10 @@ def main():
         write_csv(run_dir / "revoke_audit.csv", revoke_audit(args.input))
         ledger = payment_ledger(msgs)
         write_csv(run_dir / "payment_ledger.csv", ledger)
-        print(f"[11/17] 审计 → revoke_audit.csv / payment_ledger.csv（{len(ledger)} 条流水）")
+        # 多模态占位归档（P1-12）：[图片]/[语音] 等占位清单（待上游补全）
+        media = media_manifest(args.input)
+        write_csv(run_dir / "media_manifest.csv", media)
+        print(f"[11/17] 审计 → revoke_audit.csv / payment_ledger.csv（{len(ledger)} 条流水）/ media_manifest.csv（{len(media)} 条占位）")
     except Exception as e:
         errors.append(f"审计失败: {e}")
         print(f"[错误] 审计失败：{e}")
@@ -2261,22 +2581,25 @@ def main():
     # 可选：正则批量检索 + 多面过滤（第2轮吸收⑩，--search 关键词）
     if args.search:
         try:
-            hits = search_messages(msgs, query=args.search)
+            if args.search_bm25:
+                hits = bm25_search(msgs, query=args.search)
+                print(f"检索「{args.search}」（bigram-BM25 + 时间衰减）→ search.csv（{len(hits)} 条命中）")
+            else:
+                hits = search_messages(msgs, query=args.search)
+                print(f"检索「{args.search}」→ search.csv（{len(hits)} 条命中）")
             write_csv(run_dir / "search.csv", hits)
-            print(f"检索「{args.search}」→ search.csv（{len(hits)} 条命中）")
         except Exception as e:
             errors.append(f"检索失败: {e}")
             print(f"[错误] 检索失败：{e}")
 
     # 7. HTML 看板（汇总以上产物，纯本地离线渲染）
-    errors: list[str] = []
     try:
         _scripts_dir = Path(__file__).resolve().parent
         if str(_scripts_dir) not in sys.path:
             sys.path.insert(0, str(_scripts_dir))
         from render_html import render
         (run_dir / "report.html").write_text(render(run_dir), encoding="utf-8")
-        print(f"[13/17] HTML 报告 → {run_dir / 'report.html'}")
+        print(f"[13/18] HTML 报告 → {run_dir / 'report.html'}")
     except Exception as e:
         errors.append(f"HTML 报告生成失败: {e}")
         print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
@@ -2295,8 +2618,8 @@ def main():
             for old in snaps[:-keep]:
                 shutil.rmtree(old)
                 removed += 1
-            print(f"[14/17] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
-        print(f"[14/17] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
+            print(f"[14/18] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
+        print(f"[14/18] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
     except Exception as e:
         errors.append(f"结果目录清理失败: {e}")
         print(f"[错误] 结果目录清理失败：{e}")
@@ -2307,7 +2630,7 @@ def main():
         import shutil
         shutil.copy2(run_dir / "report.html", out / "latest_report.html")
         (out / "latest.txt").write_text(str((out / run_dir.name).resolve()) + "\n", encoding="utf-8")
-        print(f"[15/17] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
+        print(f"[15/18] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
         errors.append(f"最新入口更新失败: {e}")
         print(f"[错误] 最新入口更新失败：{e}")
@@ -2317,9 +2640,9 @@ def main():
         mem_cfg = load_config().get("memory", {}) if isinstance(load_config(), dict) else {}
         if mem_cfg.get("enabled", True):
             st = update_memory_layer(out / str(mem_cfg.get("dir", "state")), msgs, mask=not args.no_mask)
-            print(f"[16/17] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
+            print(f"[16/18] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
         else:
-            print("[13/13] 记忆层已按 config.json 关闭（memory.enabled=false）")
+            print("[16/18] 记忆层已按 config.json 关闭（memory.enabled=false）")
     except Exception as e:
         errors.append(f"记忆层更新失败: {e}")
         print(f"[错误] 记忆层更新失败：{e}")
@@ -2331,10 +2654,18 @@ def main():
             grow = build_growth_report(out / str(mem_cfg2.get("dir", "state")))
             if grow:
                 (out / "state" / "growth.md").write_text(grow + "\n", encoding="utf-8")
-                print("[17/17] 员工成长分析报告 → out/state/growth.md")
+                print("[17/18] 员工成长分析报告 → out/state/growth.md")
     except Exception as e:
         errors.append(f"成长报告生成失败: {e}")
         print(f"[错误] 成长报告生成失败：{e}")
+
+    # 18. 周期环比报告（P1-16）：最近两期指标对比 + 新冒头话题（依赖历史时间戳目录 ≥2 期）
+    try:
+        (run_dir / "trend.md").write_text(trend_compare(out, run_dir), encoding="utf-8")
+        print(f"[18/18] 周期环比报告 → {run_dir / 'trend.md'}")
+    except Exception as e:
+        errors.append(f"周期环比失败: {e}")
+        print(f"[错误] 周期环比失败：{e}")
 
     if errors:
         print("\n[错误] 本次运行存在失败项（见上），退出码 1：", *errors, sep="\n  - ")

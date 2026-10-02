@@ -203,7 +203,25 @@ footer{text-align:center;color:var(--sub);font-size:12px;margin-top:24px}
 .sop-list{display:grid;gap:8px}
 .sop-item{border:1px solid var(--line);border-left:3px solid var(--red);border-radius:8px;padding:8px 10px;font-size:13px;background:var(--red-soft)}
 .sop-item b{color:var(--red)}
-@media (max-width:760px){.two-col{grid-template-columns:1fr}.pending-grid{grid-template-columns:1fr}}
+.funnel-row{display:grid;grid-template-columns:92px 1fr 34px;align-items:center;gap:8px;padding:4px 0;font-size:13px}
+.funnel-row.hot .funnel-name{color:var(--red);font-weight:600}
+.funnel-bar{background:var(--line-soft);border-radius:99px;height:14px;overflow:hidden}
+.funnel-fill{background:var(--accent);height:100%;border-radius:99px;transition:width .3s}
+.funnel-row.hot .funnel-fill{background:var(--red)}
+.funnel-n{text-align:right;color:var(--muted)}
+.tl-session{margin-bottom:14px}
+.tl{border-left:2px solid var(--line);padding-left:12px;margin:6px 0 12px}
+.tl-node{position:relative;padding:4px 0 4px 8px;font-size:13px;display:flex;flex-wrap:wrap;gap:0 8px;align-items:baseline}
+.tl-node::before{content:"";position:absolute;left:-18px;top:10px;width:8px;height:8px;border-radius:50%;background:var(--line)}
+.tl-node.cust::before{background:var(--accent)}
+.tl-node.staff::before{background:var(--red)}
+.tl-time{color:var(--muted);font-size:12px;min-width:44px}
+.tl-who{font-weight:600;color:var(--ink)}
+.tl-txt{color:var(--ink-2);max-width:100%}
+.tl-lat{color:var(--red);font-size:12px}
+.tl-lat.hot{font-weight:700}
+.trend{white-space:pre-wrap;font-size:12.5px;line-height:1.6;background:var(--bg-soft);border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--ink-2);font-family:inherit;margin:0;overflow-x:auto}
+@media (max-width:760px){.two-col{grid-template-columns:1fr}.pending-grid{grid-template-columns:1fr}.tl-txt{max-width:100%}}
 
 
 @media (max-width:760px){
@@ -641,6 +659,84 @@ def _render_sop_audit(sop_rows: list[dict], ledger: list[dict], revokes: list[di
     return "".join(html)
 
 
+def _render_funnel_level(fun_rows: list[dict], lv_rows: list[dict]) -> str:
+    """销售漏斗与卡点 + 问题分级 P0-P3（第3轮吸收 18/19）。"""
+    html = ['<div class="two-col">']
+    html.append('<div class="sub-block"><h4>销售漏斗与卡点（咨询→成交）</h4>')
+    if fun_rows:
+        stages = ["咨询", "询价", "催拍/付款咨询", "下单未付款", "成交"]
+        cnt = {s: 0 for s in stages}
+        for r in fun_rows:
+            s = r.get("stage", "咨询")
+            cnt[s] = cnt.get(s, 0) + 1
+        maxn = max(cnt.values()) or 1
+        for s in stages:
+            n = cnt.get(s, 0)
+            hot = " class=\'hot\'" if s in ("询价", "催拍/付款咨询", "下单未付款") and n else ""
+            html.append(
+                f'<div class="funnel-row{hot}"><span class="funnel-name">{s}</span>'
+                f'<div class="funnel-bar"><div class="funnel-fill" style="width:{int(n / maxn * 100)}%"></div></div>'
+                f'<span class="funnel-n">{n}</span></div>')
+        open_n = sum(cnt.get(s, 0) for s in ("询价", "催拍/付款咨询", "下单未付款"))
+        html.append(f'<div class="tiny">未成交卡点共 {open_n} 个会话：'
+                    f'询价 {cnt.get("询价", 0)}、催拍/付款咨询 {cnt.get("催拍/付款咨询", 0)}、下单未付款 {cnt.get("下单未付款", 0)}</div>')
+    else:
+        html.append('<p class="tag">（无客户会话）</p>')
+    html.append("</div>")
+    html.append('<div class="sub-block"><h4>问题分级（P0 最优先解决）</h4>')
+    if lv_rows:
+        html.append('<table class="mini"><tr><th>级别</th><th>话题</th><th>条数</th><th>判定理由</th></tr>')
+        for r in lv_rows:
+            hot = " class=\'hot\'" if r.get("level") in ("P0", "P1") else ""
+            html.append(f'<tr{hot}><td>{escape(r.get("level", ""))}</td><td>{escape(r.get("topic", ""))}</td>'
+                        f'<td>{r.get("count", 0)}</td><td class="tiny">{escape(r.get("reason", ""))}</td></tr>')
+        html.append("</table>")
+    else:
+        html.append('<p class="tag">（无客户痛点消息）</p>')
+    html.append("</div></div>")
+    return "".join(html)
+
+
+def _render_timeline(timeline: list[dict], media_rows: list[dict], trend_md: str) -> str:
+    """客户会话时间线（第3轮吸收 11）+ 媒体占位归档（12）+ 周期环比（16）。"""
+    html = []
+    if timeline:
+        for sess in timeline[:6]:
+            cust = escape(sess.get("customer") or "?")
+            html.append(f'<div class="tl-session"><h4>会话 · {cust}'
+                        f'<span class="tiny"> {escape(sess.get("session", ""))[:10].replace("T", " ")} 起</span></h4>')
+            html.append('<div class="tl">')
+            for nd in sess.get("nodes", []):
+                lat = nd.get("latency_min")
+                lat_html = ""
+                if lat is not None:
+                    hot = " hot" if lat > 120 else ""
+                    lat_html = f'<span class="tl-lat{hot}">+{lat}min</span>'
+                stg = nd.get("stage") or ""
+                stg_html = f'<span class="tag">{escape(stg)}</span>' if stg else ""
+                cls = "staff" if nd.get("is_staff") else "cust"
+                html.append(
+                    f'<div class="tl-node {cls}"><span class="tl-time">{escape(nd.get("time", ""))}</span>'
+                    f'<span class="tl-who">{escape(nd.get("sender", ""))}</span>{stg_html}'
+                    f'<span class="tl-txt">{escape(nd.get("content", ""))}</span>{lat_html}</div>')
+            html.append("</div></div>")
+    else:
+        html.append('<p class="tag">（无客户会话）</p>')
+    if media_rows:
+        html.append('<div class="sub-block"><h4>多模态占位（待补全）</h4>')
+        html.append('<table class="mini"><tr><th>时间</th><th>发送人</th><th>类型</th><th>提示</th></tr>')
+        for r in media_rows[:8]:
+            html.append(f'<tr><td>{escape(r.get("time", ""))[5:16].replace("T", " ")}</td>'
+                        f'<td>{escape(r.get("sender", ""))}</td><td>{escape(r.get("kind", ""))}</td>'
+                        f'<td class="tiny">{escape(r.get("note", ""))}</td></tr>')
+        html.append("</table>")
+        html.append("</div>")
+    if trend_md:
+        html.append(f'<div class="sub-block"><h4>周期环比（本期 vs 上期）</h4>'
+                    f'<pre class="trend">{escape(trend_md[:1200])}</pre></div>')
+    return "".join(html)
+
+
 def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
@@ -665,6 +761,23 @@ def render(out_dir: Path, title: str = "") -> str:
     sop_rows = _read_csv(out_dir / "sop_compliance.csv")
     ledger = _read_csv(out_dir / "payment_ledger.csv")
     revokes = _read_csv(out_dir / "revoke_audit.csv")
+    funnel = _read_csv(out_dir / "funnel.csv")
+    lv_rows = _read_csv(out_dir / "insight_level.csv")
+    timeline = []
+    tlp = out_dir / "timeline.json"
+    if tlp.exists():
+        try:
+            timeline = json.loads(tlp.read_text(encoding="utf-8"))
+        except Exception:
+            timeline = []
+    media_rows = _read_csv(out_dir / "media_manifest.csv")
+    trend_md = ""
+    trp = out_dir / "trend.md"
+    if trp.exists():
+        try:
+            trend_md = trp.read_text(encoding="utf-8")
+        except Exception:
+            trend_md = ""
 
     n_eff = sum(int(r.get("effective", 0) or 0) for r in stats)
     n_filler = sum(int(r.get("filler", 0) or 0) for r in stats)
@@ -704,6 +817,8 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("12", "SLA 分诊与满意度", _render_sla_satisfaction(sla, sats), "P1-P4 分级 · 会话三档结局"),
         _section("13", "丢单健康分", _render_health(health), "多信号聚合 · 干预 playbook"),
         _section("14", "SOP 合规与审计", _render_sop_audit(sop_rows, ledger, revokes), "动作窗 · 资金流水 · 撤回"),
+        _section("15", "销售漏斗与问题分级", _render_funnel_level(funnel, lv_rows), "咨询→成交卡点 · P0-P3 处理优先级"),
+        _section("16", "会话时间线与媒体归档", _render_timeline(timeline, media_rows, trend_md), "客户交互轨迹 · 多模态占位 · 周期环比"),
     ])
 
     return f"""<!DOCTYPE html>

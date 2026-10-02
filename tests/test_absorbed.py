@@ -470,3 +470,132 @@ def test_search_messages_multi_filter():
     assert len(rows) == 1 and rows[0]["sender"] == "张三"
     rows2 = biz.search_messages(msgs, query="发货", date_from="2026-09-02", date_to="2026-09-02")
     assert len(rows2) == 1 and rows2[0]["sender"] == "李四"
+
+# ==== 第3轮吸收（P1×4 + P2×4） ====
+# ==== 第3轮吸收（P1×4 + P2×4） ====
+
+def _mk_sessions():
+    staff = {"张三", "李四"}
+    items = [
+        {"msg_id": "1", "group_id": "g1", "group_name": "g1", "sender_userid": "客户A",
+         "sender_name": "客户A", "msg_type": "text", "content": "这个多少钱？", "sent_at": "2026-09-28 10:00:00"},
+        {"msg_id": "2", "group_id": "g1", "group_name": "g1", "sender_userid": "张三",
+         "sender_name": "张三", "msg_type": "text", "content": "480 元，今天拍下今天发", "sent_at": "2026-09-28 10:01:00"},
+        {"msg_id": "3", "group_id": "g1", "group_name": "g1", "sender_userid": "客户A",
+         "sender_name": "客户A", "msg_type": "text", "content": "已付款，付好了", "sent_at": "2026-09-28 10:05:00"},
+        {"msg_id": "4", "group_id": "g1", "group_name": "g1", "sender_userid": "客户B",
+         "sender_name": "客户B", "msg_type": "text", "content": "有库存吗？我想买 50 件", "sent_at": "2026-09-28 13:00:00"},
+    ]
+    msgs = biz.normalize_messages(items, staff)
+    return biz.split_sessions(msgs)
+
+
+def test_round3_funnel_analysis():
+    """P2-18 会话漏斗：成交/询价阶段判定 + 卡点。"""
+    s = _mk_sessions()
+    rows = biz.funnel_analysis(s)
+    stages = {r["stage"] for r in rows}
+    assert "成交" in stages and "询价" in stages
+    done = [r for r in rows if r["stage"] == "成交"]
+    assert done and "已付款" in done[0]["trigger"]
+
+
+def test_round3_level_problems():
+    """P2-19 问题分级：投诉→P0，量小→P3。"""
+    ins = [{"topic": "物流投诉", "count": 2, "top_pain": ["慢"], "evidence": ["客户投诉物流太慢"]},
+           {"topic": "小问题", "count": 1, "top_pain": ["x"], "evidence": ["随口一问"]}]
+    rows = biz.level_problems(ins, {"problem_level": {"p0_count": 10, "p1_count": 5, "p2_count": 3,
+                                                  "p0_kw": ["投诉"], "p1_kw": ["退款"]}})
+    by_t = {r["topic"]: r["level"] for r in rows}
+    assert by_t["物流投诉"] == "P0" and by_t["小问题"] == "P3"
+
+
+def test_round3_faq_draft():
+    """P2-20 FAQ 草稿：高重复问答 → 草稿 + 搜索词表。"""
+    entries = [{"category": "价格/议价", "qa": [{"q": "这个多少钱？", "a": "480 元"},
+                                                 {"q": "能便宜吗？", "a": "批量可谈"}]},
+               {"category": "发货/物流", "qa": [{"q": "什么时候发货？", "a": "当天发"}]}]
+    md, terms = biz.faq_draft(entries, min_freq=2)
+    assert "FAQ：价格/议价" in md and "直接回答" in md
+    assert len(terms) == 1 and terms[0]["frequency"] == 2
+
+
+def test_round3_bm25_search():
+    """P2-21 bigram-BM25：命中打分 + 时间衰减。"""
+    items = [{"msg_id": str(i), "group_id": "g", "group_name": "g", "sender_userid": "员工1",
+              "sender_name": "员工1", "msg_type": "text", "content": c, "sent_at": ts}
+             for i, (c, ts) in enumerate([
+                 ("客户问库存还有多少", "2026-09-28 10:00:00"),
+                 ("今天发货吗", "2026-09-28 11:00:00"),
+                 ("库存充足", "2026-09-28 12:00:00")])]
+    msgs = biz.normalize_messages(items, {"员工1"})
+    hits = biz.bm25_search(msgs, "库存")
+    assert len(hits) == 2 and hits[0]["bm25"] >= hits[1]["bm25"]
+    assert "bm25" in hits[0]
+
+
+def test_round3_session_timeline():
+    """P1-11 会话时间线：节点交替 + 阶段触发 + 耗时。"""
+    s = _mk_sessions()
+    tl = biz.session_timeline(s)
+    first = tl[0]
+    nodes = first["nodes"]
+    assert len(nodes) >= 3
+    custs = [n for n in nodes if not n["is_staff"]]
+    staffs = [n for n in nodes if n["is_staff"]]
+    assert custs and staffs
+    assert any(n["stage"] for n in nodes)  # 阶段触发词
+    assert any(n["latency_min"] is not None for n in staffs)
+
+
+def test_round3_media_manifest(tmp_path):
+    """P1-12 多模态占位归档：识别 [图片]/[语音]。"""
+    f = tmp_path / "chat.txt"
+    f.write_text("2026-09-28 10:00:00 员工1: [图片]\n2026-09-28 10:01:00 员工2: [语音]\n2026-09-28 10:02:00 员工1: 正常文本\n", encoding="utf-8")
+    rows = biz.media_manifest(str(f))
+    kinds = {r["kind"] for r in rows}
+    assert kinds == {"image", "voice"}
+    assert rows[0]["note"].startswith("需上游导出")
+
+
+def test_round3_clean_training():
+    """P1-15 训练样本清洗：去重 / 过短 / 红线过滤。"""
+    lines = '\n'.join([
+        '{"instruction": "i", "input": "这个多少钱", "output": "480 元"}',
+        '{"instruction": "i", "input": "这个多少钱", "output": "480 元"}',   # 重复
+        '{"instruction": "i", "input": "hi", "output": "ok"}',              # 过短
+        '{"instruction": "i", "input": "加我微信返现", "output": "私聊"}',    # 红线
+        '{"instruction": "i", "input": "能退吗", "output": "7 天内可退，请发订单号"}',
+    ])
+    clean, report = biz.clean_training(lines, biz.DEFAULT_RULES)
+    assert len(clean) == 1
+    rules = {r["rule"] for r in report}
+    assert {"去重", "低质过短", "命中红线词"} <= rules
+
+
+def test_round3_trend_compare(tmp_path):
+    """P1-16 周期环比：不足 2 期提示 / 两期对比表。"""
+    md = biz.trend_compare(tmp_path, tmp_path / "2026-10-02_100000_000001")
+    assert "不足 2 期" in md
+    # 两期：写统计
+    import csv
+    for name, sent, eff in [("2026-10-01_100000_000001", 10, 8), ("2026-10-02_100000_000002", 12, 11)]:
+        d = tmp_path / name
+        d.mkdir()
+        with open(d / "effective_stats.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["userid", "sent", "effective", "filler", "filler_rate"])
+            w.writeheader()
+            w.writerow({"userid": "张三", "sent": sent, "effective": eff, "filler": sent - eff, "filler_rate": 0})
+        with open(d / "assessment.csv", "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["userid", "final_score", "violation_count"])
+            w.writeheader()
+            w.writerow({"userid": "张三", "final_score": 90, "violation_count": 1})
+        with open(d / "followups.csv", "w", encoding="utf-8", newline="") as f:
+            f.write("group,content\n")
+        with open(d / "insight_level.csv", "w", encoding="utf-8", newline="") as f:
+            f.write("topic,count,level,reason,top_pain\n")
+    cur = tmp_path / "2026-10-02_100000_000002"
+    md2 = biz.trend_compare(tmp_path, cur)
+    assert "| 员工消息 | 10 | 12 | ↑ +2 |" in md2
+    assert "| 有效回复 | 8 | 11 | ↑ +3 |" in md2
+    assert "全部完成" not in md2

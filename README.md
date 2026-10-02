@@ -57,7 +57,11 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `effective_stats.md` | 谁在认真回复、谁消极怠工 |
 | `daily_reports/` | 每个员工的工作日报 |
 | `followups.md` | 待跟进事项 |
-| `knowledge/` | 沉淀的知识库（脱敏） |
+| `knowledge/` | 沉淀的知识库（脱敏，含 `training_clean.jsonl` 清洗训练集、`faq_drafts.md` 高频问答草稿） |
+| `funnel.csv` | 销售漏斗：客户卡在哪个环节（询价没回/拍下没付款一眼可见） |
+| `insight_level.csv` | 客户痛点分级 P0-P3（P0 最优先解决） |
+| `trend.md` | 周期环比：本期 vs 上期关键指标 + 新冒头问题 |
+| `timeline.json` / `media_manifest.csv` | 客户会话时间线 / 图片语音等占位清单 |
 | `assessment.md` | 绩效考核评分 |
 
 **第 5 步（可选）· 让结果更聪明**：在 `config.json` 的 `llm.api_key` 填你的 Key（DeepSeek 或任意 OpenAI 兼容服务），日报/要点/知识库自动走 AI 提炼。

@@ -220,5 +220,22 @@
     "p3_min": 480,
     "p4_min": 960,
     "comment": "SLA 分诊（augmentclaude customer-support-notque）：P1 紧急1h / P2 重要4h / P3 常规1工作日 / P4 一般2工作日"
+  },
+  "problem_level": {
+    "p0_count": 10,
+    "p1_count": 5,
+    "p2_count": 3,
+    "p0_kw": [
+      "投诉",
+      "差评"
+    ],
+    "p1_kw": [
+      "退款",
+      "赔偿",
+      "损失"
+    ]
+  },
+  "faq": {
+    "min_freq": 2
   }
 }
