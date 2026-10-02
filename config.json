@@ -162,11 +162,28 @@
         "name": "辱骂客户",
         "pattern": "傻|蠢|滚|有病",
         "level": "high"
+      },
+      {
+        "name": "威胁客户",
+        "pattern": "威胁|举报你|拉黑你|不给你发货",
+        "level": "high"
+      },
+      {
+        "name": "敷衍回复",
+        "pattern": "随便|自己看|不知道|别问我",
+        "level": "medium"
       }
     ],
     "comment": "考核方案与合规规则：改这里即改考核制度；漏回复=客户提问直到群末无人实质回复（防丢单）；duty 填群名→值班员工（超时/漏回复扣分归属）；命令行 --scheme/--rules-file/--duty 可临时覆盖",
     "unanswered_penalty": 5,
-    "duty": {}
+    "duty": {},
+    "sop": {
+      "first_reply_sec": 20,
+      "followup_min": 15,
+      "retention_min": 2,
+      "prompt_min": 10,
+      "comment": "销售 SOP 动作窗（晓多科技规则表）：首响≤20s；问价后15min内跟进；犹豫后2min内挽留；意向10min内催拍。命中即记录到 sop_compliance"
+    }
   },
   "insight": {
     "enabled": true,
@@ -196,5 +213,12 @@
   "incremental": {
     "enabled": false,
     "comment": "增量模式（P1-⑫）：按记忆层 history.json 各群锚点只处理新消息；CLI --incremental 或此处置 true 启用（需先跑过一次非增量）"
+  },
+  "sla": {
+    "p1_min": 60,
+    "p2_min": 240,
+    "p3_min": 480,
+    "p4_min": 960,
+    "comment": "SLA 分诊（augmentclaude customer-support-notque）：P1 紧急1h / P2 重要4h / P3 常规1工作日 / P4 一般2工作日"
   }
 }

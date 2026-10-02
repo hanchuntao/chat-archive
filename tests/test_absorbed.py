@@ -356,3 +356,117 @@ def test_build_growth_report_from_profiles(tmp_path):
     out = biz.build_growth_report(tmp_path)
     assert "张三" in out and "观察周期" in out and "50" in out
     assert "评分" not in out or "不写评分结论" in out  # 不自动下结论
+
+# ================================================================ 第2轮吸收（P0-7 + P1-5 快赢）
+def _m(sender, content, staff=True, t="2026-09-01 10:00", g="g"):
+    return {"msg_id": sender + content[:4], "group_id": g, "group_name": g,
+            "sender": sender, "is_staff": staff, "content": content,
+            "sent_at": datetime.strptime(t, "%Y-%m-%d %H:%M")}
+
+
+def test_split_sessions_grouping_and_gap():
+    msgs = [_m("客户A", "在吗", staff=False, t="2026-09-01 10:00"),
+            _m("张三", "在的", t="2026-09-01 10:01"),
+            _m("客户B", "价格多少", staff=False, t="2026-09-01 11:00"),
+            _m("李四", "199", t="2026-09-01 11:01")]
+    s = biz.split_sessions(msgs)
+    assert len(s) == 2
+    assert s[0]["customer"] == "客户A" and len(s[0]["msgs"]) == 2
+    assert s[1]["customer"] == "客户B"
+
+
+def test_pending_queue_grace_and_ender_exemption():
+    msgs = [_m("客户A", "在吗", staff=False, t="2026-09-01 10:00"),
+            _m("客户B", "谢谢，没问题了", staff=False, t="2026-09-01 11:00")]
+    rows = biz.pending_queue(msgs, grace_min=1)
+    assert len(rows) == 1 and rows[0]["sender"] == "客户A"
+    assert rows[0]["wait_min"] >= 1
+
+
+def test_commitment_review_overdue_flag(tmp_path):
+    fups = [{"due": "2026-08-01", "content": "明天跟进客户A", "time": "2026-07-30 10:00", "source": "张三", "assignee": "李四", "group": "g"},
+            {"due": "2099-01-01", "content": "后天发货", "time": "2026-09-01 09:00", "source": "张三", "assignee": "李四", "group": "g"}]
+    rows = biz.commitment_review(fups, tmp_path)
+    assert len(rows) == 1 and rows[0]["status"] == "已过期待复核"
+    # 勾选完成 → 不再出现
+    (tmp_path / "checklist.json").write_text(
+        '["2026-07-30 10:00|明天跟进客户A"]', encoding="utf-8")
+    rows2 = biz.commitment_review(fups, tmp_path)
+    assert len(rows2) == 0
+
+
+def test_sop_compliance_first_reply():
+    msgs = [_m("客户A", "在吗", staff=False, t="2026-09-01 10:00"),
+            _m("张三", "在的，您好", t="2026-09-01 10:10")]  # 首响 600s > 20s
+    rows = biz.sop_compliance(msgs, {"first_reply_sec": 20, "followup_min": 15, "retention_min": 2, "prompt_min": 10})
+    assert any(r["rule"] == "首响超时" for r in rows)
+
+
+def test_sop_compliance_hesitate_window():
+    msgs = [_m("客户A", "太贵了，我再看看", staff=False, t="2026-09-01 10:00"),
+            _m("张三", "好的", t="2026-09-01 10:30")]  # 犹豫后 30min 无挽留
+    rows = biz.sop_compliance(msgs, {"first_reply_sec": 20, "followup_min": 15, "retention_min": 2, "prompt_min": 10})
+    assert any(r["rule"] == "犹豫未挽留" for r in rows)
+
+
+def test_satisfaction_three_levels():
+    msgs = [_m("客户A", "东西收到了，很好，谢谢", staff=False, t="2026-09-01 10:00"),
+            _m("客户B", "太慢了，我要投诉", staff=False, t="2026-09-01 11:00"),
+            _m("客户C", "还行吧", staff=False, t="2026-09-01 12:00")]
+    rows = biz.satisfaction(msgs)
+    by = {r["customer"]: r["level"] for r in rows}
+    assert by["客户A"] == "满意"
+    assert by["客户B"] == "不满意"
+    assert by["客户C"] == "一般"
+
+
+def test_sla_triage_priority():
+    msgs = [_m("客户A", "我要投诉，退款！", staff=False),
+            _m("客户B", "发货了吗，单号呢", staff=False),
+            _m("客户C", "发票怎么开", staff=False),
+            _m("客户D", "你好", staff=False)]
+    rows = biz.sla_triage(msgs)
+    by = {r["sender"]: r["level"] for r in rows}
+    assert by["客户A"] == "P1"
+    assert by["客户B"] == "P2"
+    assert by["客户C"] == "P3"
+    assert by["客户D"] == "P4"
+
+
+def test_health_score_signals():
+    msgs = [_m("客户A", "在吗", staff=False, t="2026-09-01 10:00"),
+            _m("客户B", "东西收到了，很好", staff=False, t="2026-09-01 10:00")]
+    unans = [{"sender": "客户A"}]
+    rows = biz.health_score(msgs, unans)
+    by = {r["customer"]: r for r in rows}
+    assert by["客户A"]["score"] <= 70
+    assert "未回复" in by["客户A"]["signals"]
+    assert by["客户B"]["score"] == 100
+
+
+def test_revoke_audit_parses_raw_text(tmp_path):
+    f = tmp_path / "chat.txt"
+    f.write_text("2026-09-01 10:00 张三 撤回了一条消息\n2026-09-01 10:05 李四 撤回了一条消息\n正常消息\n",
+                 encoding="utf-8")
+    rows = biz.revoke_audit(str(f))
+    assert {r["sender"]: r["revokes"] for r in rows} == {"张三": 1, "李四": 1}
+
+
+def test_payment_ledger_status():
+    msgs = [_m("张三", "红包收到，50元", t="2026-09-01 10:00"),
+            _m("李四", "转你200元", t="2026-09-01 10:05"),
+            _m("王五", "打款 1000 块，还没收到", t="2026-09-01 10:10")]
+    rows = biz.payment_ledger(msgs)
+    assert any(r["status"] == "已确认" for r in rows)
+    assert any(r["status"] == "待确认" for r in rows)
+    assert any(r["status"] == "未到账" for r in rows)
+
+
+def test_search_messages_multi_filter():
+    msgs = [_m("张三", "明天发货", t="2026-09-01 10:00"),
+            _m("李四", "明天下午发货", t="2026-09-02 10:00"),
+            _m("王五", "退货运费", t="2026-09-03 10:00")]
+    rows = biz.search_messages(msgs, query="发货", sender="张三")
+    assert len(rows) == 1 and rows[0]["sender"] == "张三"
+    rows2 = biz.search_messages(msgs, query="发货", date_from="2026-09-02", date_to="2026-09-02")
+    assert len(rows2) == 1 and rows2[0]["sender"] == "李四"

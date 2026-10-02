@@ -176,6 +176,35 @@ details[open] .day-rows{display:block}
 
 .tag{font-size:12px;color:var(--sub)}
 footer{text-align:center;color:var(--sub);font-size:12px;margin-top:24px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.sub-block h4{margin:0 0 10px;font-size:14px;color:var(--ink)}
+.mini{width:100%;border-collapse:collapse;font-size:13px}
+.mini th,.mini td{padding:6px 8px;text-align:left;border-bottom:1px solid var(--line)}
+.mini tr.hot td{color:var(--red);font-weight:600}
+.tiny{font-size:12px;color:var(--sub);margin-top:6px;line-height:1.6}
+.pending-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pending-item{border:1px solid var(--line);border-left:3px solid var(--teal);border-radius:10px;padding:10px 12px;background:var(--paper)}
+.pending-item.hot{border-left-color:var(--red);background:var(--red-soft)}
+.pend-main{display:flex;justify-content:space-between;align-items:center}
+.pend-wait{color:var(--red);font-weight:700;font-size:13px}
+.pend-ask{margin-top:6px;font-size:13px;line-height:1.6}
+.pend-meta{color:var(--sub);font-size:11px;margin-top:4px}
+.health-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.health-card{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--paper)}
+.health-card.hot{border-color:#f3c6c6;background:var(--red-soft)}
+.health-head{display:flex;justify-content:space-between;align-items:center}
+.score{font-weight:800;font-size:18px;color:var(--teal)}
+.score.low{color:var(--red)}
+.health-sigs{margin:6px 0;display:flex;flex-wrap:wrap;gap:4px}
+.tag.ok{color:var(--teal)}
+.tag.bad{color:var(--red)}
+.health-pb{font-size:12px;color:var(--amber);background:var(--amber-soft);border-radius:6px;padding:4px 8px;margin-top:6px}
+.health-last{color:var(--sub);font-size:11px;margin-top:6px}
+.sop-list{display:grid;gap:8px}
+.sop-item{border:1px solid var(--line);border-left:3px solid var(--red);border-radius:8px;padding:8px 10px;font-size:13px;background:var(--red-soft)}
+.sop-item b{color:var(--red)}
+@media (max-width:760px){.two-col{grid-template-columns:1fr}.pending-grid{grid-template-columns:1fr}}
+
 
 @media (max-width:760px){
   .stat-strip{grid-template-columns:repeat(2,1fr)}
@@ -495,6 +524,123 @@ def _render_behavior(rows: list[dict]) -> str:
 
 # ---------------------------------------------------------------- 主渲染
 
+def _render_pending(rows: list[dict]) -> str:
+    """待回复挂起队列（第2轮吸收②）：等待时长降序，>120min 红标。"""
+    if not rows:
+        return '<p class="tag">（本期无挂起提问 · 客户结束语豁免）</p>'
+    cards = []
+    for r in rows:
+        hot = int(r.get("wait_min", 0) or 0) > 120
+        cards.append(
+            f'<div class="pending-item{" hot" if hot else ""}">'
+            f'<div class="pend-main"><b>{escape(r.get("sender", ""))}</b>'
+            f'<span class="pend-wait">已等 {r.get("wait_min", 0)} 分钟</span></div>'
+            f'<div class="pend-ask">{escape(r.get("content", ""))}</div>'
+            f'<div class="pend-meta">{escape(r.get("asked_at", ""))[:16].replace("T", " ")} · {escape(r.get("group", ""))}</div>'
+            f'</div>')
+    return '<div class="pending-grid">' + "".join(cards) + "</div>"
+
+
+def _render_sla_satisfaction(sla_rows: list[dict], sat_rows: list[dict]) -> str:
+    """SLA 分级分诊 + 会话级满意度三档（第2轮吸收⑤⑥）。"""
+    html = ['<div class="two-col">']
+    levels = {}
+    for r in sla_rows:
+        levels[r.get("level", "P4")] = levels.get(r.get("level", "P4"), 0) + 1
+    html.append('<div class="sub-block"><h4>SLA 分诊（P1-P4）</h4>')
+    if sla_rows:
+        names = {"P1": "紧急 · 1h", "P2": "重要 · 4h", "P3": "常规 · 1工作日", "P4": "一般 · 2工作日"}
+        html.append('<table class="mini"><tr><th>级别</th><th>数量</th><th>SLA</th></tr>')
+        for lv in ("P1", "P2", "P3", "P4"):
+            n = levels.get(lv, 0)
+            if n:
+                hot = " class='hot'" if lv in ("P1", "P2") else ""
+                html.append(f'<tr{hot}><td>{lv}</td><td>{n}</td><td>{names[lv]}</td></tr>')
+        html.append("</table>")
+        n_p12 = sum(levels.get(lv, 0) for lv in ("P1", "P2"))
+        if n_p12:
+            html.append(f'<div class="tiny">P1/P2 咨询共 {n_p12} 条，未回复的请看「挂起队列」</div>')
+    else:
+        html.append('<p class="tag">（无客户咨询）</p>')
+    html.append("</div>")
+    html.append('<div class="sub-block"><h4>会话级满意度（三档）</h4>')
+    if sat_rows:
+        cnt = {"满意": 0, "一般": 0, "不满意": 0, "未判定": 0}
+        for r in sat_rows:
+            lv = r.get("level", "未判定")
+            cnt[lv] = cnt.get(lv, 0) + 1
+        html.append('<table class="mini"><tr><th>档位</th><th>会话数</th></tr>')
+        for k in ("满意", "一般", "不满意", "未判定"):
+            hot = " class='hot'" if k == "不满意" and cnt[k] else ""
+            html.append(f'<tr{hot}><td>{k}</td><td>{cnt[k]}</td></tr>')
+        html.append("</table>")
+        for r in [x for x in sat_rows if x.get("level") == "不满意"][:5]:
+            html.append(f'<div class="tiny">· {escape(r.get("customer", "?"))} '
+                        f'{escape(r.get("session", ""))[:10]} 会话不满意</div>')
+    else:
+        html.append('<p class="tag">（无客户会话）</p>')
+    html.append("</div></div>")
+    return "".join(html)
+
+
+def _render_health(rows: list[dict]) -> str:
+    """丢单健康分 + 干预 playbook（第2轮吸收⑦）。"""
+    if not rows:
+        return '<p class="tag">（本期无客户消息）</p>'
+    cards = []
+    for r in rows:
+        score = int(r.get("score", 100) or 100)
+        hot = score < 60
+        warn = score < 80
+        sigs = r.get("signals") or []
+        if sigs:
+            sig_html = "".join(f'<span class="tag{" bad" if hot else ""}">{escape(s)}</span>' for s in sigs)
+        else:
+            sig_html = '<span class="tag ok">无风险信号</span>'
+        pb = r.get("playbook") or ""
+        cards.append(
+            f'<div class="health-card{" hot" if hot else ""}">'
+            f'<div class="health-head"><b>{escape(r.get("customer", ""))}</b>'
+            f'<span class="score{" low" if warn else ""}">{score}</span></div>'
+            f'<div class="health-sigs">{sig_html}</div>'
+            + (f'<div class="health-pb">干预：{escape(pb)}</div>' if pb else "")
+            + f'<div class="health-last">最近消息 {escape(r.get("last_msg", ""))[:16].replace("T", " ")}</div>'
+            f'</div>')
+    return '<div class="health-grid">' + "".join(cards) + "</div>"
+
+
+def _render_sop_audit(sop_rows: list[dict], ledger: list[dict], revokes: list[dict]) -> str:
+    """销售 SOP 动作窗 + 资金流水对账 + 撤回审计（第2轮吸收④⑧⑨）。"""
+    html = ['<div class="two-col">']
+    html.append('<div class="sub-block"><h4>销售 SOP 动作窗</h4>')
+    if sop_rows:
+        html.append('<div class="sop-list">')
+        for r in sop_rows:
+            html.append(f'<div class="sop-item"><b>{escape(r.get("rule", ""))}</b>'
+                        f'<span>{escape(r.get("target", ""))} · {escape(r.get("detail", ""))}</span>'
+                        f'<div class="tiny">{escape(r.get("content", ""))}</div></div>')
+        html.append("</div>")
+    else:
+        html.append('<p class="tag">（本期无 SOP 违规）</p>')
+    html.append("</div>")
+    html.append('<div class="sub-block"><h4>资金流水 / 撤回审计</h4>')
+    if ledger:
+        html.append('<table class="mini"><tr><th>时间</th><th>发送人</th><th>金额</th><th>类型</th><th>状态</th></tr>')
+        for r in ledger[:12]:
+            hot = " class='hot'" if r.get("status") in ("待确认", "未到账") else ""
+            html.append(f'<tr{hot}><td>{escape(r.get("time", ""))[5:16].replace("T", " ")}</td>'
+                        f'<td>{escape(r.get("sender", ""))}</td><td>{escape(r.get("amount", ""))}</td>'
+                        f'<td>{escape(r.get("kind", ""))}</td><td>{escape(r.get("status", ""))}</td></tr>')
+        html.append("</table>")
+    else:
+        html.append('<p class="tag">（无金额相关消息）</p>')
+    if revokes:
+        html.append('<div class="tiny">撤回消息：' + " · ".join(
+            f"{escape(r.get('sender', ''))} {r.get('revokes', 0)} 条" for r in revokes) + "</div>")
+    html.append("</div></div>")
+    return "".join(html)
+
+
 def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
@@ -512,6 +658,13 @@ def render(out_dir: Path, title: str = "") -> str:
             dialogues = []
     signals = _read_csv(out_dir / "signal.csv")
     behavior = _read_csv(out_dir / "behavior.csv")
+    pending = _read_csv(out_dir / "pending.csv")
+    sla = _read_csv(out_dir / "sla.csv")
+    sats = _read_csv(out_dir / "satisfaction.csv")
+    health = _read_csv(out_dir / "health.csv")
+    sop_rows = _read_csv(out_dir / "sop_compliance.csv")
+    ledger = _read_csv(out_dir / "payment_ledger.csv")
+    revokes = _read_csv(out_dir / "revoke_audit.csv")
 
     n_eff = sum(int(r.get("effective", 0) or 0) for r in stats)
     n_filler = sum(int(r.get("filler", 0) or 0) for r in stats)
@@ -547,6 +700,10 @@ def render(out_dir: Path, title: str = "") -> str:
                  "规则自动扣分 · 证据化评语供主管校准"),
         _section("09", "需求洞察", _render_insights(out_dir / "insight.md"), "客户痛点 TopN · 证据至上（P1-⑧）"),
         _section("10", "客服质检信号", _render_signals(signals), "Success / Frustration / Workflow / Request（P1-⑩）"),
+        _section("11", "待回复挂起队列", _render_pending(pending), "谁被晾最久 · 排班感知口径"),
+        _section("12", "SLA 分诊与满意度", _render_sla_satisfaction(sla, sats), "P1-P4 分级 · 会话三档结局"),
+        _section("13", "丢单健康分", _render_health(health), "多信号聚合 · 干预 playbook"),
+        _section("14", "SOP 合规与审计", _render_sop_audit(sop_rows, ledger, revokes), "动作窗 · 资金流水 · 撤回"),
     ])
 
     return f"""<!DOCTYPE html>

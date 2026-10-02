@@ -710,7 +710,7 @@ def detect_violations(content: str, rules: list[dict] | None = None) -> list[dic
 
 
 # ---------------------------------------------------------------- 绩效考核
-QUESTION_RE = re.compile(r"[？?]|在吗|在不在|多少|怎么|如何|能不能|可以吗|行不行|有没有|是否|什么时候|请问|几号|多久到|能退|能换|发货")
+QUESTION_RE = re.compile(r"[？?]|在吗|在不在|多少|怎么|如何|能不能|可以吗|行不行|有没有|是否|什么时候|请问|几号|多久到|能退|能换|发货了没|发货吗|发了吗|处理一下|能处理|能帮忙|帮忙看|帮我|看看这个|怎么办")
 
 
 def is_question(content: str) -> bool:
@@ -1461,6 +1461,313 @@ def build_growth_report(state_dir: Path) -> str:
 
 
 # ---------------------------------------------------------------- 输出
+# ---------------------------------------------------------------- 第2轮吸收：会话级经营分析
+ENDERS = ("谢谢", "感谢", "好的，再见", "再见", "拜拜", "没问题了", "麻烦你了", "好的，谢谢")
+SAT_POS = ("谢谢", "感谢", "满意", "太好了", "靠谱", "好评", "没问题了", "收到货了", "很好", "赞")
+SAT_NEG = ("投诉", "不满", "太慢", "迟迟", "失望", "差评", "又坏", "敷衍", "糊弄", "退款", "生气", "没人管")
+SAT_MID = ("还行", "一般", "差不多", "可以")
+SLA_RULES = [("P1", ["投诉", "退款", "紧急", "加急", "漏发", "错发", "威胁"]),
+             ("P2", ["发货", "物流", "单号", "换货", "破损", "催单", "没收到"]),
+             ("P3", ["发票", "优惠", "价格", "库存", "咨询", "售后", "什么时候"]),
+             ("P4", [])]
+AMOUNT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(元|块|w|W|万)")
+REVOKE_RE = re.compile(r"^\[?[\d\-/ :T]+\]?\s*(.+?)(?:[\[(（]\d{5,12}[)）]\s*)?(撤回了一条消息|撤回了一条消息并重新编辑)")
+
+
+def split_sessions(msgs: list[dict], gap_min: int = 30) -> list[dict]:
+    """按互动时间窗把交错消息归并为会话（第2轮吸收①：会话级经营地基）。
+
+    30 分钟内连续互动归一会话；跨天/超窗断开。客户消息记录 customer。
+    """
+    sessions, cur = [], None
+    for m in sorted(msgs, key=lambda x: (x["group_id"], x["sent_at"])):
+        if cur is not None and (m["group_id"] != cur["group"]
+                                or (m["sent_at"] - cur["end"]).total_seconds() > gap_min * 60):
+            sessions.append(cur)
+            cur = None
+        if cur is None:
+            cur = {"group": m["group_id"], "start": m["sent_at"], "end": m["sent_at"],
+                   "customer": None if m["is_staff"] else m["sender"], "msgs": [m]}
+        else:
+            cur["end"] = m["sent_at"]
+            cur["msgs"].append(m)
+            if not m["is_staff"] and cur["customer"] is None:
+                cur["customer"] = m["sender"]
+    if cur:
+        sessions.append(cur)
+    return sessions
+
+
+def pending_queue(msgs: list[dict], grace_min: int = 15) -> list[dict]:
+    """群末仍无实质回复的客户提问 → 挂起队列（等待时长分钟降序，主管开机即看）。
+
+    客户结束语（谢谢/再见等）豁免；按群分别取最后未闭合提问（与考核 unanswered 口径一致）。
+    """
+    rows = []
+    for gid in {m["group_id"] for m in msgs}:
+        gms = sorted([m for m in msgs if m["group_id"] == gid], key=lambda x: x["sent_at"])
+        pend = None
+        for m in gms:
+            if m["is_staff"]:
+                if pend is not None and classify(m["content"]) == "substantive":
+                    pend = None
+                continue
+            if pend is not None and pend["sender"] == m["sender"] and any(e in m["content"] for e in ENDERS):
+                pend = None  # 同客户自己结束话题，不算挂起
+                continue
+            if any(e in m["content"] for e in ENDERS):
+                continue  # 其他客户结束语不产生待回复，也不影响当前挂起
+            if pend is None:
+                pend = m
+        if pend is not None:
+            wait = round((gms[-1]["sent_at"] - pend["sent_at"]).total_seconds() / 60)
+            if wait >= grace_min:
+                rows.append({"group": gid, "sender": pend["sender"], "content": pend["content"][:120],
+                             "asked_at": pend["sent_at"].isoformat(), "wait_min": wait})
+    return sorted(rows, key=lambda x: -x["wait_min"])
+
+
+def commitment_review(fups: list[dict], state_dir: Path) -> list[dict]:
+    """承诺/行动项到期复核闭环（第2轮吸收③）：due 已过 → 标「已过期待复核」。
+
+    已完成项人工勾选后写入 state/checklist.json（AI skill 引导主管勾选），复核不再重复出现。
+    """
+    done = set()
+    chk = state_dir / "checklist.json"
+    if chk.exists():
+        try:
+            done = set(json.loads(chk.read_text(encoding="utf-8")))
+        except Exception:
+            done = set()
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = []
+    for f in fups:
+        due = f.get("due", "") or ""
+        if not due:
+            continue
+        key = f.get("time", "") + "|" + f.get("content", "")[:20]
+        if key in done:
+            continue
+        if due < today:
+            out.append({**f, "status": "已过期待复核"})
+        elif due == today:
+            out.append({**f, "status": "今日到期"})
+    return out
+
+
+def sop_compliance(msgs: list[dict], sop: dict | None = None) -> list[dict]:
+    """销售 SOP 动作窗合规（第2轮吸收④，晓多科技规则表 → config assessment.sop）。
+
+    首响 ≤20s；客户问价后 15min 内跟进；犹豫后 2min 内挽留；意向 10min 内催拍。命中即记录。
+    """
+    sop = sop or {}
+    frs = sop.get("first_reply_sec", 20)
+    fup = sop.get("followup_min", 15)
+    ret = sop.get("retention_min", 2)
+    prm = sop.get("prompt_min", 10)
+    rows = []
+
+    def _scan(kws: tuple, minute: int, rule_name: str):
+        pend = None
+        for m in sorted(msgs, key=lambda x: (x["group_id"], x["sent_at"])):
+            if m["is_staff"]:
+                if pend is not None and classify(m["content"]) == "substantive" and pend["group_id"] == m["group_id"]:
+                    pend = None
+                continue
+            if pend is None and any(k in m["content"] for k in kws):
+                pend = m
+        if pend is not None:
+            end = max((mm["sent_at"] for mm in msgs if mm["group_id"] == pend["group_id"]), default=pend["sent_at"])
+            mins = round((end - pend["sent_at"]).total_seconds() / 60)
+            if mins > minute:
+                rows.append({"rule": rule_name, "target": pend["sender"],
+                             "detail": f"{mins}min > {minute}min",
+                             "time": pend["sent_at"].isoformat(), "content": pend["content"][:60]})
+
+    # 1) 首响时长
+    pend = None
+    for m in sorted(msgs, key=lambda x: (x["group_id"], x["sent_at"])):
+        if m["is_staff"]:
+            if pend is not None and classify(m["content"]) == "substantive" and pend["group_id"] == m["group_id"]:
+                sec = round((m["sent_at"] - pend["sent_at"]).total_seconds())
+                if sec > frs:
+                    rows.append({"rule": "首响超时", "target": pend["sender"],
+                                 "detail": f"{sec}s > {frs}s",
+                                 "time": pend["sent_at"].isoformat(), "content": pend["content"][:60]})
+                pend = None
+            continue
+        if pend is None:
+            pend = m
+    # 2) 问价跟进 / 3) 犹豫挽留 / 4) 意向催拍
+    _scan(("多少钱", "价格", "贵", "报价", "怎么卖"), fup, "问价未跟进")
+    _scan(("再看看", "考虑", "太贵", "别家", "便宜点", "犹豫"), ret, "犹豫未挽留")
+    _scan(("下单", "买", "要了", "来一件", "拍下", "想买"), prm, "意向未催拍")
+    return rows
+
+
+def satisfaction(msgs: list[dict]) -> list[dict]:
+    """会话级满意度三档（第2轮吸收⑤，通义晓蜜 7 条判定规则 → 规则版关键词）：
+
+    客户消息中负向词>正向词 → 不满意；有正向词 → 满意；只有中性词 → 一般；否则未判定。
+    """
+    out = []
+    for s in split_sessions(msgs):
+        cust = [m for m in s["msgs"] if not m["is_staff"]]
+        if not cust:
+            continue
+        neg = sum(1 for m in cust if any(w in m["content"] for w in SAT_NEG))
+        pos = sum(1 for m in cust if any(w in m["content"] for w in SAT_POS))
+        mid = sum(1 for m in cust if any(w in m["content"] for w in SAT_MID))
+        if neg > pos:
+            lvl = "不满意"
+        elif pos > 0:
+            lvl = "满意"
+        elif mid > 0:
+            lvl = "一般"
+        else:
+            lvl = "未判定"
+        out.append({"session": s["start"].isoformat(), "customer": s["customer"] or "?",
+                    "level": lvl, "pos": pos, "neg": neg, "mid": mid, "msgs": len(s["msgs"])})
+    return out
+
+
+def sla_triage(msgs: list[dict], sla: dict | None = None) -> list[dict]:
+    """SLA 分级分诊（第2轮吸收⑥）：P1-P4（1h/4h/1工作日/2工作日）+ 未回复超期标记。
+
+    规则表 P1：投诉/退款/紧急…；P2：发货/物流/催单…；P3：发票/价格/咨询…；其余 P4。
+    """
+    sla = sla or {}
+    mins = {"P1": sla.get("p1_min", 60), "P2": sla.get("p2_min", 240),
+            "P3": sla.get("p3_min", 480), "P4": sla.get("p4_min", 960)}
+    out = []
+    for m in msgs:
+        if m["is_staff"]:
+            continue
+        lvl = "P4"
+        for name, kws in SLA_RULES:
+            if any(k in m["content"] for k in kws):
+                lvl = name
+                break
+        out.append({"time": m["sent_at"].isoformat(), "sender": m["sender"],
+                    "content": m["content"][:120], "level": lvl, "sla_min": mins[lvl]})
+    return out
+
+
+def health_score(msgs: list[dict], unanswered: list[dict] | None = None) -> list[dict]:
+    """丢单多信号健康分（第2轮吸收⑦）：未回复 -30 / 不满意 -20 / 挂起超 2h -10。
+
+    score < 60 → 干预 playbook（优先回访+挽留话术）；<80 → 24h 内回访确认。
+    """
+    rows: dict[str, dict] = OrderedDict()
+    for m in msgs:
+        if m["is_staff"]:
+            continue
+        r = rows.setdefault(m["sender"], {"customer": m["sender"], "score": 100, "signals": []})
+        r["last_msg"] = m["sent_at"].isoformat()
+    for u in (unanswered or []):
+        if u["sender"] in rows:
+            rows[u["sender"]]["score"] -= 30
+            rows[u["sender"]]["signals"].append("未回复")
+    for s in satisfaction(msgs):
+        if s["level"] == "不满意" and s["customer"] in rows:
+            rows[s["customer"]]["score"] -= 20
+            rows[s["customer"]]["signals"].append("不满意")
+    out = []
+    for r in sorted(rows.values(), key=lambda x: x["score"]):
+        r["score"] = max(0, r["score"])
+        if r["score"] < 60:
+            r["playbook"] = "优先回访 · 挽留话术「非常抱歉让您久等了，我们马上处理」+ 补偿方案（优惠券/加急件）"
+        elif r["score"] < 80:
+            r["playbook"] = "24h 内回访确认需求"
+        else:
+            r["playbook"] = ""
+        out.append(r)
+    return out
+
+
+# ---------------------------------------------------------------- 第2轮吸收：审计 / 流水 / 检索
+def revoke_audit(input_path: str) -> list[dict]:
+    """撤回消息审计（第2轮吸收⑧）：从原始 TXT/MD 文本扫描「XX撤回了一条消息」，按人统计。
+
+    撤回消息在正常解析中会被过滤，这里单独扫原始文件补齐审计视角。
+    """
+    p = Path(input_path)
+    files = [p] if p.is_file() else sorted([f for f in p.rglob("*")
+                                            if f.is_file() and f.suffix.lower() in (".txt", ".md")])
+    rows: dict[str, int] = OrderedDict()
+    for f in files:
+        txt = f.read_text(encoding="utf-8", errors="ignore")
+        for line in txt.splitlines():
+            m = REVOKE_RE.match(line.strip())
+            if m:
+                who = m.group(1).strip()
+                rows[who] = rows.get(who, 0) + 1
+    return [{"sender": k, "revokes": v} for k, v in rows.items()]
+
+
+def payment_ledger(msgs: list[dict]) -> list[dict]:
+    """红包/转账流水对账（第2轮吸收⑨）：从消息提取金额 → 流水，未确认到账的标「待确认」。
+
+    含「收到/到账」→ 已确认；「未收到/没收到」→ 未到账；其余 → 待确认。
+    """
+    rows = []
+    for m in msgs:
+        c = m["content"]
+        amt = AMOUNT_RE.search(c)
+        if not amt:
+            continue
+        kind = "红包" if "红包" in c else ("转账" if ("转账" in c or "转你" in c or "打款" in c) else "金额")
+        if "未收到" in c or "没收到" in c:
+            status = "未到账"
+        elif "收到" in c or "到账" in c:
+            status = "已确认"
+        else:
+            status = "待确认"
+        rows.append({"time": m["sent_at"].isoformat(), "sender": m["sender"],
+                     "amount": amt.group(1) + amt.group(2), "kind": kind,
+                     "status": status, "content": c[:80]})
+    return rows
+
+
+def search_messages(msgs: list[dict], query: str = "", sender: str = "", date_from: str = "",
+                    date_to: str = "", limit: int = 50) -> list[dict]:
+    """正则批量检索 + 多面过滤（第2轮吸收⑩，业务层纯内存版；CLI 数据层另有 FTS5 search）。"""
+    q = re.escape(query) if query else ""
+    out = []
+    for m in sorted(msgs, key=lambda x: x["sent_at"], reverse=True):
+        if query and not re.search(q, m["content"], re.I):
+            continue
+        if sender and m["sender"] != sender:
+            continue
+        d = m["sent_at"].strftime("%Y-%m-%d")
+        if date_from and d < date_from:
+            continue
+        if date_to and d > date_to:
+            continue
+        out.append({"time": m["sent_at"].isoformat(), "sender": m["sender"],
+                    "content": m["content"][:200], "group": m["group_id"]})
+        if len(out) >= limit:
+            break
+    return out
+
+
+# ---------------------------------------------------------------- 输出
+def _customer_view(msgs: list[dict], all_mode: bool) -> list[dict]:
+    """--staff all 时，带问句的消息视为客户消息（与 insight/dialogues 一致），供会话级经营分析使用。
+
+    真实员工名单模式下直接返回原列表。
+    """
+    if not all_mode:
+        return msgs
+    out = []
+    for m in msgs:
+        mm = dict(m)
+        if mm["is_staff"] and is_question(mm["content"]):
+            mm["is_staff"] = False  # 员工转述客户问题 → 视为客户提问
+        out.append(mm)
+    return out
+
+
 # ---------------------------------------------------------------- 输出
 def write_csv(path: Path, rows: list[dict]):
     if not rows:
@@ -1572,6 +1879,7 @@ def main():
     ap.add_argument("--kb-config", default="", help="kb-sync 时指定 config.json 路径（默认仓库根 config.json）")
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
+    ap.add_argument("--search", default="", help="正则批量检索关键词（业务层多面过滤，输出 search.csv）")
     args = ap.parse_args()
 
     _cfg = load_config()
@@ -1669,7 +1977,7 @@ def main():
     for r in sorted(stats, key=lambda x: -x["filler_rate"]):
         st_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | {r['filler_rate']}% |")
     (run_dir / "effective_stats.md").write_text("\n".join(st_md) + "\n", encoding="utf-8")
-    print(f"[1/13] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
+    print(f"[1/17] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
 
     # 2. 工作日报
     day_dir = run_dir / "daily_reports"
@@ -1695,7 +2003,7 @@ def main():
                     f"# {u} 工作日报（{target}）\n\n> 由 AI 提炼（LLM），供主管参考。\n\n{ai}\n", encoding="utf-8")
                 continue
         (day_dir / f"{u}_{target}.md").write_text(build_daily_report(msgs, u, target), encoding="utf-8")
-    print(f"[2/13] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
+    print(f"[2/17] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
 
     # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）+ 丢单/商机信号（P0-6）
     scheme = load_scheme(args.scheme, args.duty)
@@ -1754,7 +2062,7 @@ def main():
             fu_md.append(f"- [{f['due'] or '待定'}] {f['content']}（负责：{f['assignee']}，来源：{f['source']}）")
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
     n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
-    print(f"[3/13] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
+    print(f"[3/17] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
 
     # 4. 知识库（清洗脱敏）
     kb_dir = run_dir / "knowledge"
@@ -1774,7 +2082,7 @@ def main():
         ai_n = len(ai_kb)
     (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
     (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
-    print(f"[4/13] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
+    print(f"[4/17] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
     #    （results/unanswered 已在步骤 3 前计算）+ 证据化考核说明（P0-4）
@@ -1795,7 +2103,7 @@ def main():
     if not notes:
         notes = build_assessment_notes(msgs, results, unanswered, [])
     (run_dir / "assessment_notes.md").write_text(notes, encoding="utf-8")
-    print(f"[5/13] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
+    print(f"[5/17] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
 
     # 6. 群活跃度统计（P0-5：话唠榜/活跃时段/熬夜冠军，纯标准库）
     try:
@@ -1811,7 +2119,7 @@ def main():
             act_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | "
                           f"{r['active_days']} | {r['peak_hour']} | {r['night']} |")
         (run_dir / "activity.md").write_text("\n".join(act_md) + "\n", encoding="utf-8")
-        print(f"[6/13] 群活跃度统计 → {run_dir / 'activity.csv'}")
+        print(f"[6/17] 群活跃度统计 → {run_dir / 'activity.csv'}")
     except Exception as e:
         errors.append(f"活跃度统计失败: {e}")
         print(f"[错误] 活跃度统计失败：{e}")
@@ -1821,7 +2129,7 @@ def main():
         compact = compact_chat(msgs)
         if compact:
             (run_dir / "chat_compact.txt").write_text(compact + "\n", encoding="utf-8")
-        print(f"[7/13] 按时段压缩文本 → {run_dir / 'chat_compact.txt'}")
+        print(f"[7/17] 按时段压缩文本 → {run_dir / 'chat_compact.txt'}")
     except Exception as e:
         errors.append(f"压缩文本生成失败: {e}")
         print(f"[错误] 压缩文本生成失败：{e}")
@@ -1847,7 +2155,7 @@ def main():
                 print(f"  [LLM 需求洞察失败，降级规则版] {e}")
         if ai_ins:
             (run_dir / "insight_llm.md").write_text("# 需求洞察（AI 提炼）\n\n" + ai_ins + "\n", encoding="utf-8")
-        print(f"[8/13] 需求洞察 → {run_dir / 'insight.md'}{' + insight_llm.md（AI）' if ai_ins else '（规则版）'}")
+        print(f"[8/17] 需求洞察 → {run_dir / 'insight.md'}{' + insight_llm.md（AI）' if ai_ins else '（规则版）'}")
     except Exception as e:
         errors.append(f"需求洞察失败: {e}")
         print(f"[错误] 需求洞察失败：{e}")
@@ -1866,7 +2174,7 @@ def main():
             sig_md.append(f"| {r['userid']} | {r['total']} | {r['success']} | {r['frustration']} | "
                           f"{r['workflow']} | {r['request']} | {rate}% | {r['confidence']} |")
         (run_dir / "signal.md").write_text("\n".join(sig_md) + "\n", encoding="utf-8")
-        print(f"[9/13] 客服质检信号 → {run_dir / 'signal.csv'}")
+        print(f"[9/17] 客服质检信号 → {run_dir / 'signal.csv'}")
     except Exception as e:
         errors.append(f"质检信号失败: {e}")
         print(f"[错误] 质检信号失败：{e}")
@@ -1880,7 +2188,7 @@ def main():
                         f"- 员工消息结构：问句 {bm['question_rate']}% / 陈述 {bm['statement_rate']}%"]
         (run_dir / "activity.md").write_text(
             (run_dir / "activity.md").read_text(encoding="utf-8") + "\n".join(act_md_extra) + "\n", encoding="utf-8")
-        print(f"[6/13] 沟通行为指标 → {run_dir / 'behavior.csv'}")
+        print(f"[6/17] 沟通行为指标 → {run_dir / 'behavior.csv'}")
     except Exception as e:
         errors.append(f"行为指标失败: {e}")
         print(f"[错误] 行为指标失败：{e}")
@@ -1896,10 +2204,69 @@ def main():
                                    "content": p["staff"]["content"][:200],
                                    "sent_at": p["staff"]["sent_at"].isoformat()}}
                         for p in pairs], ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"[9/13] 关键对话对 → {run_dir / 'dialogues.json'}（{len(pairs)} 组）")
+        print(f"[9/17] 关键对话对 → {run_dir / 'dialogues.json'}（{len(pairs)} 组）")
     except Exception as e:
         errors.append(f"关键对话提取失败: {e}")
         print(f"[错误] 关键对话提取失败：{e}")
+
+    # 10. 会话级经营分析（第2轮吸收①②④⑤⑥⑦）：会话切分 / 挂起队列 / 满意度 / SLA分诊 / 丢单健康分 / SOP动作窗
+    try:
+        cfg10 = load_config()
+        cust_msgs = _customer_view(msgs, str(getattr(args, "staff", "")).strip().lower() == "all")
+        sessions = split_sessions(cust_msgs)
+        write_csv(run_dir / "sessions.csv", [{"start": s["start"].isoformat(), "end": s["end"].isoformat(),
+                                               "customer": s["customer"] or "", "msgs": len(s["msgs"]),
+                                               "group": s["group"]} for s in sessions])
+        write_csv(run_dir / "pending.csv", pending_queue(cust_msgs))
+        write_csv(run_dir / "satisfaction.csv", satisfaction(cust_msgs))
+        write_csv(run_dir / "sla.csv", sla_triage(cust_msgs, cfg10.get("sla") if isinstance(cfg10, dict) else None))
+        write_csv(run_dir / "health.csv", health_score(cust_msgs, unanswered))
+        sop_cfg = cfg10.get("assessment", {}).get("sop", {}) if isinstance(cfg10, dict) else {}
+        sop_rows = sop_compliance(cust_msgs, sop_cfg)
+        write_csv(run_dir / "sop_compliance.csv", sop_rows)
+        sop_md = ["# 销售 SOP 动作窗合规（第2轮吸收④）", "",
+                  f"- 规则：首响 ≤{sop_cfg.get('first_reply_sec', 20)}s；问价后 {sop_cfg.get('followup_min', 15)}min 内跟进；"
+                  f"犹豫后 {sop_cfg.get('retention_min', 2)}min 内挽留；意向 {sop_cfg.get('prompt_min', 10)}min 内催拍", ""]
+        if sop_rows:
+            for r in sop_rows:
+                sop_md.append(f"- **{r['rule']}**：{r['target']}（{r['time'][:16].replace('T', ' ')}）{r['detail']}：{r['content']}")
+        else:
+            sop_md.append("（本期无 SOP 违规）")
+        (run_dir / "sop_compliance.md").write_text("\n".join(sop_md) + "\n", encoding="utf-8")
+        print(f"[10/17] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv")
+    except Exception as e:
+        errors.append(f"经营分析失败: {e}")
+        print(f"[错误] 经营分析失败：{e}")
+
+    # 11. 审计（第2轮吸收⑧⑨）：撤回消息 / 红包转账流水对账
+    try:
+        write_csv(run_dir / "revoke_audit.csv", revoke_audit(args.input))
+        ledger = payment_ledger(msgs)
+        write_csv(run_dir / "payment_ledger.csv", ledger)
+        print(f"[11/17] 审计 → revoke_audit.csv / payment_ledger.csv（{len(ledger)} 条流水）")
+    except Exception as e:
+        errors.append(f"审计失败: {e}")
+        print(f"[错误] 审计失败：{e}")
+
+    # 12. 承诺/行动项到期复核（第2轮吸收③）：due 已过 → 已过期待复核；勾选完成存 state/checklist.json
+    try:
+        cfg12 = load_config()
+        mem_dir = out / (cfg12.get("memory", {}).get("dir", "state") if isinstance(cfg12, dict) else "state")
+        write_csv(run_dir / "commitment_review.csv", commitment_review(fups, mem_dir))
+        print(f"[12/17] 承诺到期复核 → commitment_review.csv")
+    except Exception as e:
+        errors.append(f"承诺复核失败: {e}")
+        print(f"[错误] 承诺复核失败：{e}")
+
+    # 可选：正则批量检索 + 多面过滤（第2轮吸收⑩，--search 关键词）
+    if args.search:
+        try:
+            hits = search_messages(msgs, query=args.search)
+            write_csv(run_dir / "search.csv", hits)
+            print(f"检索「{args.search}」→ search.csv（{len(hits)} 条命中）")
+        except Exception as e:
+            errors.append(f"检索失败: {e}")
+            print(f"[错误] 检索失败：{e}")
 
     # 7. HTML 看板（汇总以上产物，纯本地离线渲染）
     errors: list[str] = []
@@ -1909,7 +2276,7 @@ def main():
             sys.path.insert(0, str(_scripts_dir))
         from render_html import render
         (run_dir / "report.html").write_text(render(run_dir), encoding="utf-8")
-        print(f"[10/13] HTML 报告 → {run_dir / 'report.html'}")
+        print(f"[13/17] HTML 报告 → {run_dir / 'report.html'}")
     except Exception as e:
         errors.append(f"HTML 报告生成失败: {e}")
         print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
@@ -1928,8 +2295,8 @@ def main():
             for old in snaps[:-keep]:
                 shutil.rmtree(old)
                 removed += 1
-            print(f"[11/13] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
-        print(f"[11/13] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
+            print(f"[14/17] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
+        print(f"[14/17] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
     except Exception as e:
         errors.append(f"结果目录清理失败: {e}")
         print(f"[错误] 结果目录清理失败：{e}")
@@ -1940,7 +2307,7 @@ def main():
         import shutil
         shutil.copy2(run_dir / "report.html", out / "latest_report.html")
         (out / "latest.txt").write_text(str((out / run_dir.name).resolve()) + "\n", encoding="utf-8")
-        print(f"[12/13] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
+        print(f"[15/17] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
         errors.append(f"最新入口更新失败: {e}")
         print(f"[错误] 最新入口更新失败：{e}")
@@ -1950,7 +2317,7 @@ def main():
         mem_cfg = load_config().get("memory", {}) if isinstance(load_config(), dict) else {}
         if mem_cfg.get("enabled", True):
             st = update_memory_layer(out / str(mem_cfg.get("dir", "state")), msgs, mask=not args.no_mask)
-            print(f"[13/13] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
+            print(f"[16/17] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
         else:
             print("[13/13] 记忆层已按 config.json 关闭（memory.enabled=false）")
     except Exception as e:
@@ -1964,7 +2331,7 @@ def main():
             grow = build_growth_report(out / str(mem_cfg2.get("dir", "state")))
             if grow:
                 (out / "state" / "growth.md").write_text(grow + "\n", encoding="utf-8")
-                print("[13/13] 员工成长分析报告 → out/state/growth.md")
+                print("[17/17] 员工成长分析报告 → out/state/growth.md")
     except Exception as e:
         errors.append(f"成长报告生成失败: {e}")
         print(f"[错误] 成长报告生成失败：{e}")
