@@ -167,5 +167,34 @@
     "comment": "考核方案与合规规则：改这里即改考核制度；漏回复=客户提问直到群末无人实质回复（防丢单）；duty 填群名→值班员工（超时/漏回复扣分归属）；命令行 --scheme/--rules-file/--duty 可临时覆盖",
     "unanswered_penalty": 5,
     "duty": {}
+  },
+  "insight": {
+    "enabled": true,
+    "top_n": 10,
+    "comment": "需求洞察（P1-⑧）：规则版聚类客户痛点消息；LLM 提炼随 llm.api_key 自动启用"
+  },
+  "signals": {
+    "enabled": true,
+    "comment": "客服质检信号（P1-⑩）：Success/Frustration/Workflow/Request 四类 + confidence（规则版确定性输出）"
+  },
+  "compact": {
+    "enabled": true,
+    "bucket_min": 10,
+    "comment": "按时段压缩聊天文本（P1-⑦）：同窗合并连续发言，产物 chat_compact.txt + LLM 预处理省 token"
+  },
+  "verify": {
+    "enabled": false,
+    "comment": "检索质量门（P2-⑮）：对讨论摘要做原文可溯源标注（[可溯源]/[待核对]）。默认关：规则版 heuristic，长群可能误标"
+  },
+  "report": {
+    "screenshot": {
+      "enabled": false,
+      "comment": "report.html 长图开关（P2-⑬）：依赖 playwright（pip install playwright && playwright install chromium），pip 可用时开启；默认关"
+    },
+    "comment": "HTML 看板配置：模块 01-10（有效回复/日报+气泡/讨论/丢单/跟进/活跃度+行为/知识库/考核/洞察/质检信号）"
+  },
+  "incremental": {
+    "enabled": false,
+    "comment": "增量模式（P1-⑫）：按记忆层 history.json 各群锚点只处理新消息；CLI --incremental 或此处置 true 启用（需先跑过一次非增量）"
   }
 }

@@ -1,6 +1,6 @@
 ---
 name: chat-archive
-description: 电商企业微信群/QQ群消息自动化管理与知识沉淀。当用户提供群聊天记录（微信/QQ 导出的 TXT/Markdown/JSON/CSV 明文文件，或微信加密备份文件），并要求：① 统计员工有效信息回复条数（识别消极怠工）、② 生成员工工作日报（去口水凑字数）、③ 总结讨论要点与待跟进事项（防事务架空）、④ 把有用信息清洗脱敏后沉淀为公司知识库（用于训练 AI 客服、员工入职培训）、⑤ 制定绩效考核制度用 AI 监督考核（监控群成员是否违反规则并评分）、⑥ 提取丢单/商机信号（询价未回复/承诺待兑现/商机线索）、⑦ 统计群活跃度（话唠榜/熬夜冠军/高峰时段）、⑧ 跨次运行记忆沉淀（员工画像/群事实记忆）时使用。也适用于用户说“整理群聊天记录”“监控员工回复”“沉淀知识库”“考核客服”“有没有丢单风险”“群里谁最活跃”等意图。
+description: 电商企业微信群/QQ群消息自动化管理与知识沉淀。当用户提供群聊天记录（微信/QQ 导出的 TXT/Markdown/JSON/CSV 明文文件，或微信加密备份文件），并要求：① 统计员工有效信息回复条数（识别消极怠工）、② 生成员工工作日报（去口水凑字数）、③ 总结讨论要点与待跟进事项（防事务架空）、④ 把有用信息清洗脱敏后沉淀为公司知识库（用于训练 AI 客服、员工入职培训）、⑤ 制定绩效考核制度用 AI 监督考核（监控群成员是否违反规则并评分）、⑥ 提取丢单/商机信号（询价未回复/承诺待兑现/商机线索）、⑦ 统计群活跃度（话唠榜/熬夜冠军/高峰时段）、⑧ 跨次运行记忆沉淀（员工画像/群事实记忆）、⑨ 需求洞察（客户痛点 TopN + 产品机会）、⑩ 客服质检信号（Success/Frustration/Workflow/Request）、⑪ 按时段压缩聊天文本、⑫ 知识库自动分类归档（7 类 + frontmatter）、⑬ 增量运行与员工成长报告时使用。也适用于用户说“整理群聊天记录”“监控员工回复”“沉淀知识库”“考核客服”“有没有丢单风险”“群里谁最活跃”“客户在抱怨什么”“客服服务得怎么样”等意图。
 ---
 
 # Chat Archive — 群消息统计·监管·知识沉淀
@@ -55,6 +55,7 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 | `--no-mask` | 关闭知识库脱敏（谨慎） |
 | `--llm` / `--no-llm` | 强制/禁用 LLM 提炼（默认：配置了 `config.json` 的 `llm.api_key` 自动启用）。AI 提炼覆盖讨论要点/员工日报/知识库，失败自动降级规则版；LLM 输入先脱敏，输出禁止还原个人信息 |
 | `--mask-all` | **输入后立即全链路脱敏**：PII 掩码 + 员工/客户匿名化，所有产物（统计/日报/跟进/考核/知识库）均不含明文身份与敏感信息。默认关闭（本地内部管理看原文）；交付第三方或严格隐私场景必开 |
+| `--incremental` | 增量模式（P1-⑫）：以记忆层 `state/history.json` 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量；`config.json` 的 `incremental.enabled` 可常开）。多群分别按各自锚点过滤 |
 
 ## 输出清单（`--out` 目录）
 
@@ -70,6 +71,12 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 | `activity.csv/.md` | **群活跃度**（P0-5）：话唠榜/活跃天数/高峰时段/熬夜冠军 |
 | `report.html` | 汇总以上全部产物的离线 HTML 看板（含丢单风险面板、群活跃度模块） |
 | `state/`（`--out` 下） | **跨次运行记忆层**（P0-1）：`history.json` 群历史锚点、`profiles/*.md` 员工/客户画像、`memory.md` 群事实记忆；供增量日报/成长分析/防重复犯错 |
+| `chat_compact.txt` | **按时段压缩聊天文本**（P1-⑦）：同窗连续发言合并 `[10:35~10:39] 张三:… | 李四:…`，快速浏览 + LLM 预处理省 token |
+| `insight.md`（+`insight_llm.md`） | **需求洞察**（P1-⑧）：客户痛点按话题聚类 TopN，每条挂带时间戳原话证据；配置 LLM 时另出 AI 提炼（痛点 Top5 + 产品/服务机会） |
+| `signal.csv/.md` | **客服质检信号**（P1-⑩）：Success/Frustration/Workflow/Request 四类计数 + confidence（命中占比启发式） |
+| `behavior.csv` | **沟通行为量化指标**（P2-⑭，规则版）：客户提问→员工首次实质回复平均分钟数、问句/陈述占比 |
+| `dialogues.json` | **关键对话对**（P1-⑨）：客户问→员工实质回复配对，report.html 气泡展示（前 8 组） |
+| `state/growth.md` | **员工成长分析报告**（P2-⑰）：由记忆层画像套模板（观察周期/发言概况/关键事件），**不写评分结论**、不可直接当考核依据 |
 | `out/<日期_时间>_<毫秒>/` | 每次运行的完整结果目录（一份，重跑不覆盖，保留策略见下） |
 
 数据层（CLI）产物：SQLite+FTS5 主库（`archive.db`）、`search` 检索结果（JSON）、`report` 周报（Markdown）。
@@ -82,6 +89,16 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 - **丢单/商机信号**：`followups` 类型区分漏回复/询价未回复/承诺待兑现/商机线索；report.html 独立「丢单风险」面板（参考 WeChat Intelligence Hub）。
 - **跨次运行记忆层**：每次 `all` 运行后把本批消息并入 `out/state/`，跨批积累员工画像与群事实，供增量日报、员工成长分析（参考 baoyu-wechat-summary 的 history/profiles/memory 架构）。
 - **群活跃度**：话唠榜/活跃天数/高峰时段/熬夜冠军，纯标准库；词云是可选开关（`config.json` 的 `activity.wordcloud`，默认关，依赖 jieba）。（参考 shiyin-li/wx-daily-reports）
+- **按时段压缩**（P1-⑦）：同窗连续发言合并为时间桶行，LLM 提炼输入自动走压缩（6000 字符截断），省 token 且保留“谁在说”语境。（参考 shiyin-li/wx-daily-reports）
+- **需求洞察**（P1-⑧）：规则版把客户负面/痛点消息按话题聚类 TopN，每条挂带时间戳原话证据；`--staff all` 时带问句的员工消息（转述客户问题）自动计入。LLM 版提炼高频痛点 Top5 + 产品/服务机会（证据至上，失败降级规则版）。
+- **关键对话气泡**（P1-⑨）：客户提问→员工首次实质回复配对，report.html 日报模块下气泡展示；`--staff all` 时员工问句→实质回复也配对（与考核语义一致）。（参考 WeChat Intelligence Hub 的对话对提取）
+- **客服质检信号**（P1-⑩）：Success（成交/好评）/Frustration（投诉/不满/催促）/Workflow（流程）/Request（请求）四类按发送人计数 + confidence（命中/消息数启发式），report.html 独立面板，Frustration 行标红供质检优先跟进。
+- **知识库自动分类归档**（P1-⑪）：每条目提取 7 类信息（任务待办/截止日期/会议约定/电话/地址/金额交易/重要文件）写入 frontmatter（type/source/created/tags/info_types），training.jsonl 同步加 info_types 元数据，供 AI 客服训练/检索。
+- **wx-cli 桥接 + 增量运行**（P1-⑫）：自动探测本机 wx-cli/wechat-cli（仅提示用法，**不内置微信解密**——数据解密层整体灰色地带）；`--incremental` 以记忆层锚点只处理新消息，多群分别过滤。
+- **沟通行为量化**（P2-⑭）：客户提问→员工首次实质回复平均分钟数 + 问句/陈述占比，写入 behavior.csv 并展示在看板活跃度模块。
+- **检索质量门**（P2-⑮，`config.json` verify.enabled 默认关）：对讨论摘要每条要点做原文可溯源标注（[可溯源]/[待核对]），防 AI 提炼编造。
+- **员工成长报告**（P2-⑰）：由记忆层画像跨批累计生成观察周期/发言概况/关键事件，**只观察不评分**，供主管做激励/培训参考。
+- **report.html 长图开关**（P2-⑬，`config.json` report.screenshot.enabled 默认关）：依赖 playwright 截图，pip 可用时开启；纯标准库默认不启用。
 
 以上能力全部并入本项目，CLI 与 AI skill 两种入口产物一致；无新增 pip 依赖（词云除外，默认关）。
 
@@ -93,3 +110,5 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 - **CLI 找不到模块**：CLI 入口是仓库根 `chat-archive.py`（自动定位包路径），不要用 `python3 -m chat_archive.cli`（依赖工作目录）。
 - **结果保留**：`out/` 下默认保留最近 30 份结果目录（`config.json` 的 `snapshot.keep`，0=永久保留），或运行时加 `--keep-snapshots N` 覆盖。
 - **知识库双通道**：`config.json` 的 `knowledge` 段控制产物去向——本地（默认 `out/knowledge/`）+ 腾讯 ima（可选）。ima 在 https://ima.qq.com/agent-interface 生成 API Key/Client ID 填入配置后，运行 `chat_archive.py kb-sync --out 目录` 自动上传脱敏 .md；未配 Key 时导出到 `out/ima_export/` 供手动导入。
+- **insight/dialogues 为空**：`--staff all` 全员员工时，洞察只看带问句的消息（转述客户问题）、对话按员工问句→实质回复配对；指定真实员工名单（`--staff "张三,李四"`）时客户消息直接计入，结果更完整。
+- **增量跑一次**：`--incremental` 依赖记忆层锚点，第一次跑请用普通模式（不带该参数）建立 `state/history.json`；之后每次只处理锚点后的新消息，无新消息时直接跳过并提示。

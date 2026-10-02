@@ -194,3 +194,165 @@ def test_inquiry_answered_not_flagged():
             _msg("张三", "99 元，今天下单今天发", staff=True, t="2026-09-01 10:02")]
     inq, _ = biz.tag_deal_signals(msgs)
     assert len(inq) == 0
+
+
+# ---- P1-⑦ 按时段压缩聊天文本 ----
+
+def test_compact_chat_buckets():
+    msgs = [_msg("张三", "第一批已发", t="2026-09-01 10:35"),
+            _msg("李四", "我这边跟进了", t="2026-09-01 10:37"),
+            _msg("张三", "客户收到货了", t="2026-09-01 11:00")]
+    out = biz.compact_chat(msgs)
+    assert "10:35~10:37" in out and "11:00" in out
+    assert "张三:第一批已发" in out and "李四:我这边跟进了" in out
+    # 跨 10 分钟窗口不合并
+    assert out.count("[") == 2
+
+
+def test_llm_compact_staff_only_and_truncate():
+    msgs = [_msg("客户A", "多少钱", staff=False, t="2026-09-01 10:00"),
+            _msg("张三", "今天价格是 100，明天有活动", t="2026-09-01 10:05")]
+    out = biz._llm_compact(msgs, limit_chars=20)
+    assert "客户A" not in out  # 只留员工
+    assert len(out) <= 20
+
+
+# ---- P1-⑧ 需求洞察 ----
+
+def test_extract_insights_groups_pain_points():
+    msgs = [_msg("客户A", "这个太贵了，能不能便宜点", staff=False, t="2026-09-01 10:00"),
+            _msg("客户B", "发货太慢了，迟迟不到", staff=False, t="2026-09-01 10:05"),
+            _msg("客户C", "收到货是破的，质量差", staff=False, t="2026-09-01 10:10"),
+            _msg("张三", "正常报价，不议价", t="2026-09-01 10:20")]
+    ins = biz.extract_insights(msgs, top_n=5)
+    assert ins, "应聚类出痛点"
+    by_topic = {r["topic"]: r for r in ins}
+    assert set(by_topic) >= {"价格/议价", "发货/物流", "质量/破损"}, "三条痛点各归其类"
+    assert any("客户A" in e for e in by_topic["价格/议价"]["evidence"])
+
+
+def test_extract_insights_all_staff_question_fallback():
+    # --staff all 全员员工：带问句的消息（转述客户问题）也算
+    msgs = [_msg("张三", "客户说太贵了，要降价吗？", t="2026-09-01 10:00"),
+            _msg("李四", "今天订单都发出去了", t="2026-09-01 10:05")]
+    ins = biz.extract_insights(msgs, top_n=5)
+    topics = [r["topic"] for r in ins]
+    assert "价格/议价" in topics  # 问句命中痛点
+
+
+# ---- P1-⑨ 关键对话气泡 ----
+
+def test_extract_dialogues_pairs():
+    msgs = [_msg("客户A", "在吗？想退款", staff=False, t="2026-09-01 10:00"),
+            _msg("张三", "亲，可以的，我马上处理", t="2026-09-01 10:03"),
+            _msg("客户B", "物流到哪了", staff=False, t="2026-09-01 10:05"),
+            _msg("李四", "已发出，单号私发您", t="2026-09-01 10:06")]
+    pairs = biz.extract_dialogues(msgs)
+    assert len(pairs) == 2
+    assert pairs[0]["customer"]["sender"] == "客户A"
+    assert pairs[0]["staff"]["sender"] == "张三"
+
+
+def test_extract_dialogues_all_staff_question():
+    msgs = [_msg("张三", "客户问还有货吗？", t="2026-09-01 10:00"),
+            _msg("李四", "有，库存充足", t="2026-09-01 10:02")]
+    pairs = biz.extract_dialogues(msgs)
+    assert len(pairs) == 1
+    assert pairs[0]["staff"]["sender"] == "李四"
+
+
+# ---- P1-⑩ 客服质检信号 ----
+
+def test_signal_stats_four_types_and_confidence():
+    msgs = [_msg("张三", "客户已下单，谢谢支持", t="2026-09-01 10:00"),
+            _msg("张三", "客户投诉发货太慢", t="2026-09-01 10:05"),
+            _msg("李四", "我提交了工单走流程", t="2026-09-01 10:06"),
+            _msg("李四", "麻烦您提供订单号", t="2026-09-01 10:07")]
+    rows = biz.signal_stats(msgs)
+    by = {r["userid"]: r for r in rows}
+    assert by["张三"]["success"] == 1 and by["张三"]["frustration"] == 1
+    assert by["李四"]["workflow"] == 1 and by["李四"]["request"] == 1
+    assert by["张三"]["confidence"] in ("高", "中", "低")
+
+
+# ---- P1-⑪ 知识库自动分类归档 ----
+
+def test_classify_info_type():
+    assert biz.classify_info_type("明天记得跟进这个订单") == "任务待办"
+    assert biz.classify_info_type("截止到周五前交") == "截止日期"
+    assert biz.classify_info_type("我电话 13800138000") == "电话"
+    assert biz.classify_info_type("收货地址发我一下") == "地址"
+    assert biz.classify_info_type("价格是 500 元") == "金额交易"
+    assert biz.classify_info_type("文档我发群里了") == "重要文件"
+
+
+def test_knowledge_frontmatter_and_info_types():
+    msgs = [_msg("客户A", "这个多少钱？", staff=False, t="2026-09-01 10:00"),
+            _msg("张三", "500 元，包邮", t="2026-09-01 10:03")]
+    entries, train, ob = biz.build_knowledge(msgs, mask=True)
+    assert entries, "应生成知识条目"
+    e = entries[0]
+    assert e["content"].startswith("---")
+    assert "source: group-chat" in e["content"]
+    assert "info_types:" in e["content"]
+    assert "金额交易" in e["info_types"]
+    row = train.splitlines()[0]
+    assert "info_types" in row
+
+
+# ---- P1-⑫ wx-cli 探测 + 增量过滤 ----
+
+def test_detect_wx_cli_returns_existing_or_empty():
+    import shutil
+    got = biz.detect_wx_cli()
+    if shutil.which("wx-cli") or shutil.which("wechat-cli"):
+        assert got
+    else:
+        assert got == ""
+
+
+def test_filter_incremental_uses_anchor(tmp_path):
+    msgs = [_msg("张三", "第一批已发", t="2026-09-01 10:00"),
+            _msg("张三", "第二批准备中", t="2026-09-02 09:30")]
+    biz.update_memory_layer(tmp_path, msgs)
+    new_msgs = [_msg("张三", "第二批准备中（旧）", t="2026-09-01 09:00"),
+                _msg("张三", "第二批已发出", t="2026-09-02 10:00")]
+    new, skipped = biz.filter_incremental(new_msgs, tmp_path)
+    assert skipped == 1 and len(new) == 1
+    assert new[0]["content"] == "第二批已发出"
+
+
+# ---- P2-⑭ 沟通行为量化指标 ----
+
+def test_behavior_metrics():
+    msgs = [_msg("客户A", "在吗", staff=False, t="2026-09-01 10:00"),
+            _msg("张三", "在的，亲", t="2026-09-01 10:05"),
+            _msg("张三", "有什么可以帮您？", t="2026-09-01 10:06")]
+    bm = biz.behavior_metrics(msgs)
+    assert bm["responses"] == 1
+    assert abs(bm["avg_response_min"] - 5.0) < 0.1
+    assert bm["question_rate"] >= 50
+
+
+# ---- P2-⑮ 检索质量门 ----
+
+def test_verify_summary_mark_source():
+    msgs = [_msg("张三", "今天发货 5 单，都签收了", t="2026-09-01 10:00")]
+    md = "- 今天发货 5 单，都签收了\n- 客户都满意\n"
+    out = biz.verify_summary(md, msgs)
+    assert "[可溯源]" in out
+    assert "[待核对]" in out
+
+
+# ---- P2-⑰ 员工成长分析报告 ----
+
+def test_build_growth_report_from_profiles(tmp_path):
+    prof = tmp_path / "profiles"
+    prof.mkdir(parents=True)
+    (prof / "张三.md").write_text(
+        "# 员工画像：张三\n\nname: 张三\nrole: 员工\nfirst_seen: 2026-08-01T09:00:00\n"
+        "last_seen: 2026-09-02T18:00:00\ntotal_messages: 50\neffective: 40\n\n"
+        "- 处理了批量订单\n- 客户好评率高\n", encoding="utf-8")
+    out = biz.build_growth_report(tmp_path)
+    assert "张三" in out and "观察周期" in out and "50" in out
+    assert "评分" not in out or "不写评分结论" in out  # 不自动下结论

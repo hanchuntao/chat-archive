@@ -410,6 +410,89 @@ def _render_assessment(rows: list[dict]) -> str:
             + "".join(trs) + "</tbody></table>")
 
 
+
+def _render_dialogues(pairs: list[dict]) -> str:
+    """P1-⑨ 关键对话气泡：客户问 → 员工答（从 dialogues.json 读）。"""
+    if not pairs:
+        return ""
+    html = ['<div style="margin-top:16px"><h4 style="margin:0 0 8px;color:var(--teal)">关键对话（客户问 → 员工答）</h4>']
+    for p in pairs[:8]:
+        c, s = p.get("customer", {}), p.get("staff", {})
+        q = escape((c.get("content") or "")[:160])
+        a = escape((s.get("content") or "")[:160])
+        qn = escape((c.get("sender") or "?"))
+        an = escape((s.get("sender") or "?"))
+        qt = (c.get("sent_at") or "")[:16].replace("T", " ")
+        at = (s.get("sent_at") or "")[:16].replace("T", " ")
+        html.append(
+            '<div style="max-width:88%;margin:6px 0;padding:8px 12px;border-radius:12px;'
+            'background:var(--red-soft);border:1px solid #f3c1c1">'
+            f'<span style="font-size:11px;color:var(--sub)">{qn} · {qt}</span><br>{q}</div>'
+            '<div style="max-width:88%;margin:6px 0 10px 12%;padding:8px 12px;border-radius:12px;'
+            'background:var(--teal-soft);border:1px solid #bfe0ea">'
+            f'<span style="font-size:11px;color:var(--sub)">{an} · {at}</span><br>{a}</div>')
+    html.append("</div>")
+    return "".join(html)
+
+
+def _render_insights(path: Path) -> str:
+    """P1-⑧ 需求洞察：insight.md -> HTML 证据块。"""
+    txt = path.read_text(encoding="utf-8", errors="ignore").strip() if path.exists() else ""
+    if not txt or "（本期无客户痛点消息）" in txt:
+        return "<p>（本期无客户痛点消息）</p>"
+    lines = []
+    for ln in txt.splitlines():
+        s = ln.strip()
+        if not s or s == "# 需求洞察（客户痛点 TopN，证据至上）":
+            continue
+        if s.startswith("## "):
+            lines.append(f'<h4 style="margin:14px 0 4px;color:var(--ink)">{escape(s[3:])}</h4>')
+        elif s.startswith("- 高频痛点词"):
+            lines.append(f'<p class="sub" style="margin:2px 0 4px">{escape(s)}</p>')
+        elif s.startswith("- ") and "证据" not in s[:8]:
+            lines.append(f'<div style="padding:4px 10px;border-left:3px solid var(--amber);'
+                         f'background:var(--amber-soft);border-radius:0 6px 6px 0;margin:4px 0">{escape(s[2:])}</div>')
+        elif s.startswith("- "):
+            lines.append(f'<div style="padding:4px 10px;border-left:3px solid var(--teal);'
+                         f'background:var(--teal-soft);border-radius:0 6px 6px 0;margin:4px 0">{escape(s[2:])}</div>')
+        else:
+            lines.append(f'<p style="margin:2px 0">{escape(s)}</p>')
+    return "".join(lines)
+
+
+def _render_signals(rows: list[dict]) -> str:
+    """P1-⑩ 客服质检信号：signal.csv -> 表格（frustration>0 标红行）。"""
+    if not rows:
+        return "<p>（无信号数据）</p>"
+    cols = ["userid", "total", "success", "frustration", "workflow", "request", "confidence"]
+    head = "".join(f"<th>{escape({'userid': '发送人', 'total': '总消息', 'success': 'Success',
+                                  'frustration': 'Frustration', 'workflow': 'Workflow',
+                                  'request': 'Request', 'confidence': '置信度'}.get(k, k))}</th>" for k in cols)
+    body = []
+    for r in sorted(rows, key=lambda x: -int(x.get("signal_count", 0) or 0)):
+        if not r.get("userid"):
+            continue
+        cls = ' style="background:var(--red-soft)"' if int(r.get("frustration", 0) or 0) > 0 else ""
+        tds = "".join(f"<td>{escape(r.get(k, ''))}</td>" for k in cols)
+        body.append(f"<tr{cls}>{tds}</tr>")
+    return ('<table style="width:100%;border-collapse:collapse;font-size:13px">'
+            f"<thead><tr style='background:var(--teal-soft)'>{head}</tr></thead>"
+            f"<tbody>{''.join(body)}</tbody></table>"
+            '<p class="sub" style="margin-top:6px">Frustration 信号（投诉/不满/催促）标红行，供质检优先跟进</p>')
+
+
+def _render_behavior(rows: list[dict]) -> str:
+    """P2-⑭ 沟通行为指标（规则版）展示条。"""
+    if not rows:
+        return ""
+    r = rows[0]
+    return ('<div style="margin-top:14px;padding:12px 14px;background:var(--teal-soft);border-radius:8px">'
+            "<strong>沟通行为指标（规则版）</strong>：客户提问→员工首次实质回复平均 "
+            f"{escape(str(r.get('avg_response_min', '0')))} 分钟（{escape(str(r.get('responses', '0')))} 次配对）；"
+            f"员工消息结构：问句 {escape(str(r.get('question_rate', '0')))}% / "
+            f"陈述 {escape(str(r.get('statement_rate', '0')))}%</div>")
+
+
 # ---------------------------------------------------------------- 主渲染
 
 def render(out_dir: Path, title: str = "") -> str:
@@ -420,6 +503,15 @@ def render(out_dir: Path, title: str = "") -> str:
     days = [_parse_daily(p) for p in sorted((out_dir / "daily_reports").glob("*.md"))]
     topics = _parse_discussion(out_dir / "discussion_summary.md")
     kb = _parse_knowledge(out_dir / "knowledge")
+    dialogues = []
+    dp = out_dir / "dialogues.json"
+    if dp.exists():
+        try:
+            dialogues = json.loads(dp.read_text(encoding="utf-8"))
+        except Exception:
+            dialogues = []
+    signals = _read_csv(out_dir / "signal.csv")
+    behavior = _read_csv(out_dir / "behavior.csv")
 
     n_eff = sum(int(r.get("effective", 0) or 0) for r in stats)
     n_filler = sum(int(r.get("filler", 0) or 0) for r in stats)
@@ -445,14 +537,16 @@ def render(out_dir: Path, title: str = "") -> str:
         + _stat_card(n_viol, "违规次数", hot=n_viol > 0)
         + "</div></div>",
         _section("01", "有效回复统计", _render_stats(stats), "识别消极怠工"),
-        _section("02", "员工工作日报", _render_daily(days), "已去除口水凑字数"),
+        _section("02", "员工工作日报", _render_daily(days) + _render_dialogues(dialogues), "已去除口水凑字数 · 关键对话气泡"),
         _section("03", "讨论要点", _render_discussion(topics), "四分类：决策/待办/未解决/重要信息"),
         _section("04", "丢单 / 商机风险", _render_deal_risk(followups), "询价未回复 / 承诺待兑现 / 商机线索"),
         _section("05", "待跟进事项", _render_followups(followups), "截止日自动标红"),
-        _section("06", "群活跃度", _render_activity(activity), "话唠榜 / 熬夜冠军 / 高峰时段"),
+        _section("06", "群活跃度", _render_activity(activity) + _render_behavior(behavior), "话唠榜 / 熬夜冠军 / 高峰时段 · 响应速度"),
         _section("07", "知识库沉淀", _render_knowledge(kb), "AI 客服训练 / 入职培训"),
         _section("08", "AI 监督绩效考核", _render_assessment(assess) + _render_assessment_notes(out_dir / "assessment_notes.md"),
                  "规则自动扣分 · 证据化评语供主管校准"),
+        _section("09", "需求洞察", _render_insights(out_dir / "insight.md"), "客户痛点 TopN · 证据至上（P1-⑧）"),
+        _section("10", "客服质检信号", _render_signals(signals), "Success / Frustration / Workflow / Request（P1-⑩）"),
     ])
 
     return f"""<!DOCTYPE html>
