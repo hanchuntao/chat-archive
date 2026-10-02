@@ -1,0 +1,5 @@
+# 核心功能: 纯 Python 标准库, 零第三方依赖
+# (SQLite/FTS5/json/re/urllib 均为标准库; LLM 提炼也用 urllib, 无需安装)
+
+# 可选: 本地 Chroma 向量库语义检索（pip 可用时）
+chromadb>=0.5

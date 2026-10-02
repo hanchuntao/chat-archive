@@ -1,0 +1,15 @@
+# 运行产物
+chat_archive_output/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# 工具
+.idea/
+.DS_Store

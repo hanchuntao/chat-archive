@@ -1,0 +1,116 @@
+{
+  "snapshot": {
+    "keep": 30,
+    "comment": "archive/ 下保留最近 N 份快照，超出自动清理；0 = 不限制、永久保留"
+  },
+  "output": {
+    "default_out": "chat_archive_output",
+    "comment": "业务层脚本 --out 的默认输出目录"
+  },
+  "knowledge": {
+    "local": {
+      "enabled": true,
+      "dir": "knowledge",
+      "vector": {
+        "enabled": false,
+        "backend": "chroma",
+        "dir": "vector_db",
+        "comment": "本地语义检索（可选）：pip install chromadb 后开启，由 CLI vectorize 建向量库"
+      },
+      "comment": "本地知识库：产物默认写入 out/knowledge/（md + training.jsonl + onboarding.md），dir 可改"
+    },
+    "ima": {
+      "enabled": false,
+      "api_key": "",
+      "client_id": "",
+      "knowledge_base_name": "",
+      "folder": "",
+      "comment": "腾讯 ima 知识库（可选）：https://ima.qq.com/agent-interface 生成 API Key/Client ID 填入；未配 Key 时 kb-sync 导出 out/ima_export/ 供手动导入"
+    }
+  },
+  "defaults": {
+    "input": "sample_data/ecom_chat.txt",
+    "staff": "all",
+    "out": "chat_archive_output",
+    "comment": "零参数模式的默认输入：CLI 直接运行 chat-archive（不带子命令）或 AI 一句话触发时使用；相对路径基于项目根解析，支持 staff 三种写法（all/名单/文件）"
+  },
+  "llm": {
+    "api_key": "",
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "comment": "LLM 提炼（可选，OpenAI 兼容）：填入 api_key 后 report --llm 走 AI 提炼；base_url/model 可换任意 OpenAI 兼容服务。环境变量 CHAT_ARCHIVE_LLM_* 优先于此处"
+  },
+  "topics": {
+    "发货/物流": [
+      "发货",
+      "物流",
+      "快递",
+      "多久",
+      "寄出",
+      "到货",
+      "单号",
+      "运输",
+      "签收"
+    ],
+    "退款/售后": [
+      "退款",
+      "退货",
+      "换货",
+      "售后",
+      "退钱",
+      "退换",
+      "维修"
+    ],
+    "发票/开票": [
+      "发票",
+      "开票",
+      "抬头",
+      "税号"
+    ],
+    "优惠/活动": [
+      "优惠",
+      "活动",
+      "券",
+      "折扣",
+      "满减",
+      "立减",
+      "包邮",
+      "特价"
+    ],
+    "库存/缺货": [
+      "库存",
+      "缺货",
+      "断货",
+      "没货",
+      "补货",
+      "现货"
+    ],
+    "价格/议价": [
+      "价格",
+      "多少钱",
+      "贵",
+      "便宜",
+      "降价",
+      "底价",
+      "议价"
+    ],
+    "质量/破损": [
+      "质量",
+      "破损",
+      "坏了",
+      "破了",
+      "损坏",
+      "瑕疵",
+      "开裂"
+    ],
+    "催单/咨询": [
+      "在吗",
+      "客服",
+      "请问",
+      "咨询",
+      "订单",
+      "什么时候"
+    ],
+    "comment": "知识库话题规则：换成你的行业关键词即可（如安全/IT：漏洞、CVE、内推、面试…），改这里不用改代码"
+  }
+}

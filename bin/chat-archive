@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# chat-archive 命令包装（macOS/Linux）。Windows 请用 `python chat-archive.py` 或 pip 安装。
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec python3 "$DIR/chat-archive.py" "$@"

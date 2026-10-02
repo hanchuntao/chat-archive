@@ -1,0 +1,123 @@
+{
+  "session": {
+    "chatId": "group_2026_q3",
+    "name": "测试群-2026Q3",
+    "lastTimestamp": "2026-09-30 18:00:00"
+  },
+  "messages": [
+    {
+      "content": "欢迎新成员加入本群，请先看群公告",
+      "senderDisplayName": "群管理员",
+      "formattedTime": "2026-09-01 09:00:00",
+      "type": "system"
+    },
+    {
+      "content": "各位好，本周有个安全岗位的内推机会，要求熟悉 SAST/SCA，有意向的联系我",
+      "senderDisplayName": "王五",
+      "formattedTime": "2026-09-01 10:23:11",
+      "type": "text"
+    },
+    {
+      "content": "我有朋友在招 DevSecOps，详情看 https://jobs.example.com/devsecops 这个链接",
+      "senderDisplayName": "李四",
+      "formattedTime": "2026-09-02 14:05:00",
+      "type": "text"
+    },
+    {
+      "content": "需要内推的可以加我微信 wxid_zhangsan2026 或者发邮件到 hr.team@example.com",
+      "senderDisplayName": "张三",
+      "formattedTime": "2026-09-03 11:30:45",
+      "type": "text"
+    },
+    {
+      "content": "联系电话 13812345678，随时可以沟通",
+      "senderDisplayName": "王五",
+      "formattedTime": "2026-09-04 16:20:00",
+      "type": "text"
+    },
+    {
+      "content": "收到",
+      "senderDisplayName": "赵六",
+      "formattedTime": "2026-09-04 16:21:00",
+      "type": "text"
+    },
+    {
+      "content": "+1",
+      "senderDisplayName": "钱七",
+      "formattedTime": "2026-09-04 16:22:00",
+      "type": "text"
+    },
+    {
+      "content": "👍",
+      "senderDisplayName": "孙八",
+      "formattedTime": "2026-09-04 16:23:00",
+      "type": "emoji"
+    },
+    {
+      "content": "[图片]",
+      "senderDisplayName": "周九",
+      "formattedTime": "2026-09-05 08:00:00",
+      "type": "image"
+    },
+    {
+      "content": "哈哈哈，这个太有意思了",
+      "senderDisplayName": "吴十",
+      "formattedTime": "2026-09-05 09:12:00",
+      "type": "text"
+    },
+    {
+      "content": "明天下午三点在腾讯会议开季度复盘会，会议号 123456789",
+      "senderDisplayName": "群管理员",
+      "formattedTime": "2026-09-10 17:00:00",
+      "type": "text"
+    },
+    {
+      "content": "我的身份证号是 11010119900307789X，入职材料用",
+      "senderDisplayName": "郑十一",
+      "formattedTime": "2026-09-11 10:00:00",
+      "type": "text"
+    },
+    {
+      "content": "刚才那个内推岗位 JD 在这：https://jobs.example.com/sast-engineer ，截止这周五",
+      "senderDisplayName": "王五",
+      "formattedTime": "2026-09-12 13:40:00",
+      "type": "text"
+    },
+    {
+      "content": "收到，我去看看",
+      "senderDisplayName": "李四",
+      "formattedTime": "2026-09-12 13:45:00",
+      "type": "text"
+    },
+    {
+      "content": "推荐一本《软件安全构建成熟度模型》，对做 AppSec 的很有用",
+      "senderDisplayName": "陈十二",
+      "formattedTime": "2026-09-15 20:11:00",
+      "type": "text"
+    },
+    {
+      "content": "本周五之前记得提交各自的安全周报，模板在群文件",
+      "senderDisplayName": "群管理员",
+      "formattedTime": "2026-09-20 09:30:00",
+      "type": "text"
+    },
+    {
+      "content": "好的，收到",
+      "senderDisplayName": "王五",
+      "formattedTime": "2026-09-20 09:31:00",
+      "type": "text"
+    },
+    {
+      "content": "国庆假期值班表已发群公告，请查收",
+      "senderDisplayName": "群管理员",
+      "formattedTime": "2026-09-28 15:00:00",
+      "type": "system"
+    },
+    {
+      "content": "假期快乐！",
+      "senderDisplayName": "赵六",
+      "formattedTime": "2026-09-30 18:00:00",
+      "type": "text"
+    }
+  ]
+}
