@@ -47,7 +47,8 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 
 | 文件 | 是什么 |
 |---|---|
-| `report.html` | 浏览器打开，六类结果汇总看板（推荐先看这个） |
+| `latest_report.html` | **最新看板固定入口**（永远指向最近一次运行，浏览器可收藏，路径不变） |
+| `report.html` | 本次结果目录里的汇总看板 |
 | `effective_stats.md` | 谁在认真回复、谁消极怠工 |
 | `daily_reports/` | 每个员工的工作日报 |
 | `followups.md` | 待跟进事项 |
@@ -231,7 +232,7 @@ chat-archive
 
 ## LLM 提炼（可选）
 
-在 `config.json` 的 `llm` 段配置（与其他配置同源，改一处全生效）：
+**零第三方依赖**（标准库 `urllib` 实现，不需要 pip 装任何包）。在 `config.json` 的 `llm` 段配置（与其他配置同源，改一处全生效）：
 
 ```json
 { "llm": { "api_key": "sk-xxx", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat" } }
@@ -354,6 +355,8 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 - `defaults.input`：**零参数模式的默认输入**（CLI 直接运行 `chat-archive` 或 AI 一句话触发时使用）；`defaults.staff`/`defaults.out` 可选，不填则显式传参或使用默认输出目录。
 - `llm`：AI 提炼配置（`report --llm` 用）；`base_url`/`model` 可换任意 OpenAI 兼容服务。
 - `snapshot.keep`：`out/` 下保留最近 N 份结果目录（每次运行一份），超出自动清理；`0` = 永久保留。运行时可用 `--keep-snapshots N` 临时覆盖。
+- `topics`：**知识库话题规则**，换成你的行业关键词（如安全/IT：漏洞、CVE、内推、面试…），改这里不用改代码；不配置时用内置电商话题
+- `latest`：每次运行后自动更新 `out/latest_report.html`（最新看板固定入口）+ `out/latest.txt`（最新结果目录名），路径固定可收藏
 - `knowledge.local.dir`：本地知识库目录，**可填 Obsidian vault 路径等任意绝对路径**（见下节）。
 - `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成。
 
