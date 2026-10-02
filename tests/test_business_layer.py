@@ -272,8 +272,8 @@ def test_render_html_smoke(tmp_path):
          "--input", str(REPO / "sample_data" / "ecom_chat.txt"),
          "--staff", "all", "--out", str(out)],
         check=True, capture_output=True, timeout=120)
-    run_dir = next(d for d in out.iterdir() if d.is_dir() and d.name != "latest_report.html")
+    run_dir = next(d for d in out.iterdir() if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}_", d.name))
     html = (run_dir / "report.html").read_text(encoding="utf-8")
-    for mod in ("有效回复统计", "员工工作日报", "讨论要点", "待跟进事项", "知识库沉淀", "AI 监督绩效考核"):
+    for mod in ("有效回复统计", "员工工作日报", "讨论要点", "待跟进事项", "知识库沉淀", "AI 监督绩效考核", "群活跃度", "丢单 / 商机风险"):
         assert mod in html, f"report.html 缺模块: {mod}"
     assert "漏回复" in html, "跟进区应渲染漏回复红标（客户G 案例）"

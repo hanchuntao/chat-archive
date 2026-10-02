@@ -268,11 +268,17 @@ def _render_followups(rows: list[dict]) -> str:
             overdue = bool(due) and datetime.strptime(due, "%Y-%m-%d").date() < today
         except ValueError:
             overdue = False
-        if r.get("unanswered"):
-            badge = '<span class="badge bad">漏回复</span>'
+        rtype = r.get("type") or "待跟进"
+        if r.get("unanswered") or "漏回复" in rtype or "询价" in rtype:
+            badge = f'<span class="badge bad">{escape(rtype)}</span>'
+        elif "承诺" in rtype:
+            badge = '<span class="badge warn">承诺待兑现</span>'
+        elif "商机" in rtype:
+            badge = '<span class="badge good">商机线索</span>'
+        elif overdue:
+            badge = '<span class="badge bad">已过期</span>'
         else:
-            badge = '<span class="badge bad">已过期</span>' if overdue else (
-                f'<span class="tag">{escape(due or "待定")}</span>')
+            badge = f'<span class="tag">{escape(due or "待定")}</span>'
         trs.append(
             f"<tr><td>{escape(r.get('group',''))}</td>"
             f"<td>{escape(r.get('assignee',''))}</td>"
@@ -280,10 +286,87 @@ def _render_followups(rows: list[dict]) -> str:
             f"<td class='num'>{badge}</td>"
             f"<td>{escape(r.get('content',''))}</td>"
             f"<td class='num'>{escape((r.get('time') or '')[:16])}</td></tr>")
-    return ('<table><colgroup><col style="width:16%"><col style="width:10%"><col style="width:10%">'
-            '<col style="width:12%"><col style="width:40%"><col style="width:12%"></colgroup>'
-            '<thead><tr><th>群</th><th>负责</th><th>来源</th><th>截止</th><th>事项</th>'
+    return ('<table><colgroup><col style="width:15%"><col style="width:9%"><col style="width:10%">'
+            '<col style="width:14%"><col style="width:40%"><col style="width:12%"></colgroup>'
+            '<thead><tr><th>群</th><th>负责</th><th>来源</th><th>类型/截止</th><th>事项</th>'
             '<th>时间</th></tr></thead><tbody>' + "".join(trs) + "</tbody></table>")
+
+
+def _render_deal_risk(rows: list[dict]) -> str:
+    """丢单/商机风险面板（P0-6）：漏回复 / 询价未回复 / 承诺待兑现 / 商机线索。"""
+    bucket = {"漏回复": [], "询价未回复": [], "承诺待兑现": [], "商机线索": []}
+    for r in rows:
+        t = r.get("type") or "待跟进"
+        if "询价" in t:
+            bucket["询价未回复"].append(r)
+        elif "漏回复" in t:
+            bucket["漏回复"].append(r)
+        elif "承诺" in t:
+            bucket["承诺待兑现"].append(r)
+        elif "商机" in t:
+            bucket["商机线索"].append(r)
+    if not any(bucket.values()):
+        return '<p class="tag">（本期无丢单/商机信号）</p>'
+    html = ['<div class="stat-strip" style="grid-template-columns:repeat(4,1fr);margin-top:0;margin-bottom:14px">']
+    for k, items in bucket.items():
+        hot = k in ("漏回复", "询价未回复")
+        html.append(_stat_card(len(items), k, hot=hot and len(items) > 0))
+    html.append("</div>")
+    for k, items in bucket.items():
+        if not items:
+            continue
+        html.append(f"<div class='kb-group'><h3 class='kb-title'>{escape(k)}"
+                    f" <span class='tag'>（{len(items)} 条）</span></h3>")
+        for it in items[:12]:
+            html.append(f'<div class="qa"><div class="q"><span class="day-time">{escape((it.get("time") or "")[:16])}</span>'
+                        f'{escape(it.get("source") or "")}</div><div class="a">{escape(it.get("content") or "")}</div></div>')
+        html.append("</div>")
+    return "".join(html)
+
+
+def _render_activity(rows: list[dict]) -> str:
+    """群活跃度（P0-5）：话唠榜 + 熬夜冠军 + 最忙时段（纯 CSS bar）。"""
+    if not rows:
+        return '<p class="tag">（无活跃度数据）</p>'
+    top = sorted(rows, key=lambda r: -(int(r.get("sent", 0) or 0)))[:8]
+    maxv = max((int(r.get("sent", 0) or 0) for r in top), default=1) or 1
+    night_owl = max(rows, key=lambda r: int(r.get("night", 0) or 0)) if any(int(r.get("night", 0) or 0) for r in rows) else None
+    from collections import Counter
+    peak = Counter((r.get("peak_hour") or "-") for r in rows).most_common(1)
+    trs = []
+    for r in top:
+        pct = int(r.get("sent", 0) or 0) / maxv * 100
+        trs.append(
+            f"<tr><td>{escape(r.get('userid',''))}</td>"
+            f"<td class='num'>{r.get('sent','')}</td>"
+            f"<td class='num'>{r.get('effective','')}</td>"
+            f"<td class='num'>{r.get('active_days','')}</td>"
+            f"<td class='num'>{escape(r.get('peak_hour','-'))}</td>"
+            f"<td class='num'>{r.get('night','0')}</td>"
+            f"<td><div class='bar'><i style='width:{pct:.0f}%'></i></div></td></tr>")
+    head = ""
+    if night_owl:
+        head = (f"<div class='tag' style='margin-bottom:10px'>熬夜冠军（23-5 点）：<b>{escape(night_owl.get('userid',''))}</b>"
+                f"（{night_owl.get('night','0')} 条深夜消息）"
+                + (f" · 最忙时段：{escape(peak[0][0])}" if peak and peak[0][0] != "-" else "") + "</div>")
+    return head + ('<table><colgroup><col style="width:18%"><col style="width:9%"><col style="width:9%">'
+                   '<col style="width:10%"><col style="width:12%"><col style="width:10%"><col style="width:32%"></colgroup>'
+                   '<thead><tr><th>成员</th><th>总消息</th><th>有效</th><th>活跃天数</th><th>高峰</th>'
+                   '<th>熬夜</th><th>占比</th></tr></thead><tbody>' + "".join(trs) + "</tbody></table>")
+
+
+def _render_assessment_notes(path: Path) -> str:
+    """考核证据评语（P0-4）：折叠展示 assessment_notes.md。"""
+    if not path.exists():
+        return ""
+    txt = path.read_text(encoding="utf-8", errors="ignore").strip()
+    if not txt:
+        return ""
+    if len(txt) > 4000:
+        txt = txt[:4000] + "\n…（截断，完整见 assessment_notes.md）"
+    return ('<details style="margin-top:12px"><summary>证据化评语与需人工判断项（P0-4，Rating 由主管填写）</summary>'
+            '<div class="day-rows" style="padding:10px 14px;font-size:12.5px;white-space:pre-wrap;'
+            'font-family:ui-monospace,Menlo,monospace">' + escape(txt) + "</div></details>")
 
 
 def _render_knowledge(groups: list[dict]) -> str:
@@ -333,6 +416,7 @@ def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
     assess = _read_csv(out_dir / "assessment.csv")
+    activity = _read_csv(out_dir / "activity.csv")
     days = [_parse_daily(p) for p in sorted((out_dir / "daily_reports").glob("*.md"))]
     topics = _parse_discussion(out_dir / "discussion_summary.md")
     kb = _parse_knowledge(out_dir / "knowledge")
@@ -342,6 +426,9 @@ def render(out_dir: Path, title: str = "") -> str:
     n_sent = n_eff + n_filler
     n_viol = sum(int(r.get("violation_count", 0) or 0) for r in assess)
     n_qa = sum(len(g["qa"]) for g in kb)
+    n_risk = sum(1 for r in followups
+                 if ("漏回复" in (r.get("type") or "") or "询价" in (r.get("type") or "")
+                     or "承诺" in (r.get("type") or "") or r.get("unanswered")))
 
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
     t = title or "群聊工作分析报告"
@@ -353,16 +440,19 @@ def render(out_dir: Path, title: str = "") -> str:
         + _stat_card(n_sent, "员工消息总数")
         + _stat_card(n_eff, "有效回复")
         + _stat_card(len(stats), "参与员工")
-        + _stat_card(len(followups), "待跟进事项")
+        + _stat_card(n_risk, "丢单风险", hot=n_risk > 0)
         + _stat_card(n_qa, "知识条目")
         + _stat_card(n_viol, "违规次数", hot=n_viol > 0)
         + "</div></div>",
         _section("01", "有效回复统计", _render_stats(stats), "识别消极怠工"),
         _section("02", "员工工作日报", _render_daily(days), "已去除口水凑字数"),
-        _section("03", "讨论要点", _render_discussion(topics), "防事务架空"),
-        _section("04", "待跟进事项", _render_followups(followups), "截止日自动标红"),
-        _section("05", "知识库沉淀", _render_knowledge(kb), "AI 客服训练 / 入职培训"),
-        _section("06", "AI 监督绩效考核", _render_assessment(assess), "规则违规自动扣分"),
+        _section("03", "讨论要点", _render_discussion(topics), "四分类：决策/待办/未解决/重要信息"),
+        _section("04", "丢单 / 商机风险", _render_deal_risk(followups), "询价未回复 / 承诺待兑现 / 商机线索"),
+        _section("05", "待跟进事项", _render_followups(followups), "截止日自动标红"),
+        _section("06", "群活跃度", _render_activity(activity), "话唠榜 / 熬夜冠军 / 高峰时段"),
+        _section("07", "知识库沉淀", _render_knowledge(kb), "AI 客服训练 / 入职培训"),
+        _section("08", "AI 监督绩效考核", _render_assessment(assess) + _render_assessment_notes(out_dir / "assessment_notes.md"),
+                 "规则自动扣分 · 证据化评语供主管校准"),
     ])
 
     return f"""<!DOCTYPE html>

@@ -804,6 +804,396 @@ def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> tuple[l
     return results, unanswered
 
 
+# ---------------------------------------------------------------- 昵称歧义消解（P0-2）
+# 占位符/低信息量昵称（≤2 字符、nil/null/test/admin/user/undefined、单 emoji、纯标点）
+# 绝不原样进报表；查不到实名时用「昵称（ID 后 4 位）」区分。员工与别名匹配到的昵称不处理。
+LOWINFO_NAME_RE = re.compile(
+    r"^(nil|null|test|admin|user|undefined|unknown|wxid_?[\w]*|[\u4e00-\u9fa5]{0,2}|"
+    r"[\W_]{1,8}|[^\u4e00-\u9fa5A-Za-z0-9]{1,8})$", re.I)
+LOWINFO_WORDS = {"nil", "null", "test", "admin", "user", "undefined", "unknown", "微信", "weixin"}
+
+
+def is_lowinfo_name(s: str) -> bool:
+    s = (s or "").strip()
+    if not s:
+        return True
+    if s.lower() in LOWINFO_WORDS:
+        return True
+    if LOWINFO_NAME_RE.match(s):
+        return True
+    # 单 emoji
+    if all(ch in "👍🙏🙌😀😄😂🤝👌✅❤️🌹⭐✨😊🥰😍😘🤗😎🤔😳😭😡" for ch in s):
+        return True
+    return False
+
+
+def resolve_ambiguous_names(msgs: list[dict], staff: set[str], alias_map: dict[str, str]) -> int:
+    """占位符昵称且非员工 → sender 改为「昵称（ID 后 4 位）」；返回处理条数。"""
+    fixed = 0
+    for m in msgs:
+        s = m["sender"]
+        if not is_lowinfo_name(s):
+            continue
+        if s in staff or s in alias_map or m["is_staff"]:
+            continue
+        tail = re.sub(r"^wxid_", "", s)[-4:] if re.search(r"[\w]{4,}$", s) else s[-4:]
+        m["sender"] = f"{s}（{tail}）" if tail else s
+        fixed += 1
+    return fixed
+
+
+# ---------------------------------------------------------------- 四分类摘要（P0-3）
+# 规则版降级：核心决策（有明确结论）与未解决问题（讨论中断/结论不明）的关键词识别；
+# LLM 版在 ai_summarize_discussion 中按四分类 schema 提炼。
+DECISION_HINTS = ["定了", "确认", "拍板", "就这样", "决定了", "按这个", "最终方案",
+                  "就这么", "就这么定", "好的，就", "ok，就", "就按"]
+UNRESOLVED_HINTS = ["待定", "不确定", "再看看", "再说", "没定", "还没定", "有争议",
+                    "讨论一下", "商量", "还没确认", "尚未", "？", "?"]
+DECISION_NEGATIVES = ("还没", "待定", "没定", "不确定", "再看看", "未定", "再说")
+
+
+def build_decisions_unresolved(msgs: list[dict]) -> tuple[list[dict], list[dict]]:
+    """规则版核心决策/未解决问题提取（仅员工实质消息）。返回 (决策列表, 未解决列表)。
+
+    决策判定排除含否定词的讨论（"价格还没定"不是决策）；未解决词与决策词重叠时以未解决为准。
+    """
+    decisions, unresolved = [], []
+    for m in msgs:
+        if not m["is_staff"]:
+            continue
+        if classify(m["content"]) == "filler":
+            continue
+        c = m["content"]
+        if any(h in c for h in UNRESOLVED_HINTS):
+            unresolved.append({"time": m["sent_at"].isoformat(), "who": m["sender"], "content": c})
+            continue
+        if any(h in c for h in DECISION_HINTS) and not any(n in c for n in DECISION_NEGATIVES):
+            decisions.append({"time": m["sent_at"].isoformat(), "who": m["sender"], "content": c})
+    return decisions, unresolved
+
+
+def append_four_class_section(md: str, msgs: list[dict]) -> str:
+    """规则版：在讨论要点 md 尾部追加「核心决策 / 未解决问题」两节（无命中则不加）。"""
+    dec, un = build_decisions_unresolved(msgs)
+    extra = []
+    if dec:
+        extra += ["", "## 核心决策", ""]
+        for d in dec[-8:]:
+            extra.append(f"- {d['time'][5:16]} {d['who']}：{d['content']}")
+    if un:
+        extra += ["", "## 未解决问题", ""]
+        for u in un[-8:]:
+            extra.append(f"- {u['time'][5:16]} {u['who']}：{u['content']}")
+    return md + "\n".join(extra) if extra else md
+
+
+# ---------------------------------------------------------------- 群活跃度（P0-5）
+def activity_stats(msgs: list[dict]) -> list[dict]:
+    """每发送人活跃统计：消息数/有效/口水/活跃天数/高峰时段/熬夜数(23-5点)。纯标准库。"""
+    rows: dict[str, dict] = OrderedDict()
+    for m in msgs:
+        r = rows.setdefault(m["sender"], {"userid": m["sender"], "sent": 0, "effective": 0,
+                                          "filler": 0, "active_days": 0, "peak_hour": "-",
+                                          "night": 0, "hours": {}})
+        r["sent"] += 1
+        if classify(m["content"]) == "filler":
+            r["filler"] += 1
+        else:
+            r["effective"] += 1
+        h = m["sent_at"].hour
+        r["hours"][h] = r["hours"].get(h, 0) + 1
+        if h >= 23 or h < 5:
+            r["night"] += 1
+    for r in rows.values():
+        r["active_days"] = len({m["sent_at"].strftime("%Y-%m-%d")
+                                for m in msgs if m["sender"] == r["userid"]})
+        if r["hours"]:
+            pk = max(r["hours"], key=r["hours"].get)
+            r["peak_hour"] = f"{pk:02d}:00"
+        del r["hours"]
+    return list(rows.values())
+
+
+def activity_summary(msgs: list[dict]) -> dict:
+    """群活跃概览：总人数/消息/有效/高峰时段分布/熬夜冠军/最活跃成员。"""
+    st = activity_stats(msgs)
+    hours: dict[int, int] = {}
+    for m in msgs:
+        h = m["sent_at"].hour
+        hours[h] = hours.get(h, 0) + 1
+    top = sorted(st, key=lambda x: -x["sent"])
+    night = sorted([r for r in st if r["night"] > 0], key=lambda x: -x["night"])
+    return {
+        "senders": len(st),
+        "total": sum(r["sent"] for r in st),
+        "effective": sum(r["effective"] for r in st),
+        "hour_hist": [hours.get(h, 0) for h in range(24)],
+        "top": top[:5],
+        "night_owl": night[0] if night else None,
+        "busiest_hour": max(hours, key=hours.get) if hours else -1,
+    }
+
+
+# ---------------------------------------------------------------- 丢单/商机信号（P0-6）
+INQUIRY_HINTS = ["多少钱", "报价", "怎么卖", "有货", "价格", "批", "采购", "要多少",
+                 "拿货", "下单", "买", "怎么买", "链接", "哪里买", "多少钱一"]
+PROMISE_HINTS = ["明天发", "马上发", "尽快安排", "这就给", "放心，", "一定给你", "稍后发",
+                 "这周发", "今天发", "下午发", "安排发货", "马上给你", "这就安排"]
+LEAD_HINTS = ["我们做", "我们需要", "想采购", "要一批", "长期合作", "找供应商", "想合作", "有没有货"]
+
+
+def tag_deal_signals(msgs: list[dict]) -> tuple[list[dict], list[dict]]:
+    """丢单/商机信号：返回 (询价未回复列表, 承诺待兑现列表)。
+
+    询价未回复：客户/员工问句含询价词，其后到群末无员工实质回复。
+    承诺待兑现：员工含承诺词的消息（本批标记，跨批兑现核对交给记忆层/人工）。
+    """
+    inquiries, promises = [], []
+    groups: dict[str, list[dict]] = OrderedDict()
+    for m in msgs:
+        groups.setdefault(m["group_id"] or m["group_name"] or "_", []).append(m)
+    for gmsgs in groups.values():
+        pend = None
+        for m in gmsgs:
+            if m["is_staff"]:
+                if pend and classify(m["content"]) == "substantive":
+                    pend = None
+                if pend is None and is_question(m["content"]):
+                    pend = m
+                if any(p in m["content"] for p in PROMISE_HINTS):
+                    promises.append({"group": m["group_name"] or m["group_id"],
+                                     "content": m["content"], "who": m["sender"],
+                                     "time": m["sent_at"].isoformat()})
+            else:
+                if pend is None:
+                    pend = m
+        if pend is not None and any(k in pend["content"] for k in INQUIRY_HINTS):
+            inquiries.append({"group": pend["group_name"] or pend["group_id"],
+                              "content": pend["content"], "who": pend["sender"],
+                              "time": pend["sent_at"].isoformat()})
+    return inquiries, promises
+
+
+def ai_extract_leads(msgs: list[dict]) -> list[dict]:
+    """LLM 版商机线索提取（从客户消息找需求/采购意向）；失败返回 [] 由调用方降级。"""
+    lines = [f"- {m['sent_at'].strftime('%m-%d %H:%M')} {m['sender']}：{mask_pii(m['content'])}"
+             for m in msgs if not m["is_staff"]]
+    if not lines:
+        return []
+    user = ("以下是群聊中的客户/非员工消息（已脱敏）。请找出潜在的**商机线索**：客户明确提到需求、"
+            "采购意向、合作意向、批量购买的发言。输出 JSON 数组，每项 {\"content\": 原话(保持脱敏), "
+            "\"who\": 发言人, \"hint\": 商机类型}；没有则输出 []。不得编造。\n\n消息：\n" + "\n".join(lines[:120]))
+    try:
+        raw = chat_completion(_LLM_SYSTEM, user, timeout=90)
+    except Exception:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [{"group": "", "content": str(d.get("content", "")), "who": str(d.get("who", "")),
+                     "hint": str(d.get("hint", "商机线索")), "time": datetime.now().isoformat()}
+                    for d in data if isinstance(d, dict) and d.get("content")]
+    except Exception:
+        pass
+    return []
+
+
+# ---------------------------------------------------------------- 证据化考核（P0-4）
+def build_assessment_notes(msgs: list[dict], results: list[dict], unanswered: list[dict],
+                           pairs: list[dict]) -> str:
+    """规则版考核补充说明：Summary + 证据引用（有效回复原话@时间）+ 需人工判断清单 + Rating 留空。
+
+    评分由规则自动计算（机器分），定性评语不写死结论，Rating 留空由主管评定。
+    """
+    notes = ["# 绩效考核说明（证据化，供主管校准）", "",
+             "> 评分由规则自动计算（上表）；以下为证据引用与需人工判断项，**Rating 由主管评定，本文件不写评分结论**。", ""]
+    for r in sorted(results, key=lambda x: -x["final_score"]):
+        uid = r["userid"]
+        eff = [m for m in msgs if m["is_staff"] and m["sender"] == uid
+               and classify(m["content"]) == "substantive"]
+        notes += [f"## {uid}", "",
+                  f"- 机器分：{r['final_score']}（基准 {r['base_score']}；超时 {r['timeout_count']} 次、"
+                  f"漏回复 {r['unanswered_count']} 条、违规 {r['violation_count']} 次、口水率 {r['filler_rate']}%）", ""]
+        if eff:
+            notes.append("**证据引用（有效回复示例，按时间）**：")
+            for m in eff[:5]:
+                notes.append(f"- {m['sent_at'].strftime('%m-%d %H:%M')} {m['content'][:120]}")
+            if len(eff) > 5:
+                notes.append(f"- …（共 {len(eff)} 条有效回复）")
+        else:
+            notes.append("（本期无有效回复证据）")
+        judged = [u for u in unanswered if u["sender"] == uid]
+        if judged:
+            notes.append("**需人工判断**（这些客户提问直到群末无实质回复，是否丢单需核实）：")
+            for u in judged[:5]:
+                notes.append(f"- [{u['sent_at'].strftime('%m-%d %H:%M')}] {u['content'][:120]}")
+        notes += ["", f"**Rating（主管填写）**：____", ""]
+    return "\n".join(notes)
+
+
+def ai_assessment_review(msgs: list[dict], results: list[dict]) -> str:
+    """LLM 版证据化考核评语：每条结论挂证据，标注需人工判断处，不写评分。"""
+    if not results:
+        return ""
+    blocks = []
+    for r in results[:12]:
+        uid = r["userid"]
+        eff = [m for m in msgs if m["is_staff"] and m["sender"] == uid
+               and classify(m["content"]) == "substantive"]
+        lines = [f"- {m['sent_at'].strftime('%m-%d %H:%M')} {mask_pii(m['content'])}" for m in eff[:20]]
+        if not lines:
+            continue
+        user = (
+            f"以下是员工 {uid} 本期的有效回复消息（已脱敏）。请输出绩效考核定性评语（Markdown）：\n"
+            "1. **工作表现 Summary**（2-3 句话，基于消息事实）\n"
+            "2. **能力分项**（如响应/专业度/服务态度，每项**必须就地引用原话证据**，格式：`- 分项：结论（证据：原话@时间）`）\n"
+            "3. **需人工判断清单**：消息中无法自动判定、需要主管核实的事项（无则写 无）\n"
+            "4. **不写评分**：不要给出任何分数或 Rating，评分边界留给主管。\n"
+            "约束：禁止「可能/倾向于/大概」等模糊词；信息不足时标注「原材料不足」；不得编造。\n\n消息：\n" + "\n".join(lines)
+        )
+        try:
+            md = chat_completion(_LLM_SYSTEM, user, timeout=90)
+        except Exception:
+            md = ""
+        if md:
+            blocks.append(f"## {uid}\n\n{md}\n")
+    if not blocks:
+        return ""
+    return "# 绩效考核说明（AI 证据化评语，供主管校准）\n\n> 定性评语基于消息证据生成，**不写评分结论**，Rating 由主管评定。\n\n" + "\n".join(blocks)
+
+
+# ---------------------------------------------------------------- 记忆层（P0-1）
+def _state_dir(out: Path) -> Path:
+    return out / "state"
+
+
+def load_history(state_dir: Path) -> dict:
+    p = state_dir / "history.json"
+    if p.exists():
+        try:
+            d = json.loads(_read_text_any(p))
+            if isinstance(d, dict) and isinstance(d.get("groups"), dict):
+                return d
+        except Exception:
+            pass
+    return {"groups": {}, "updated_at": ""}
+
+
+def update_memory_layer(state_dir: Path, msgs: list[dict], mask: bool = True) -> dict:
+    """把本批消息并入跨次运行记忆层：
+      - history.json：群历史锚点（first/last_seen、last_message_time、批次计数、成员）
+      - profiles/<sha1>.md：员工/客户画像（发言≥3 条才更新，append-only 金句）
+      - memory.md：群事实记忆（具体事实 + 有证据 + 无反驳才写入，去重）
+    返回 {groups, profiles, memory_added}。
+    """
+    state_dir.mkdir(parents=True, exist_ok=True)
+    (state_dir / "profiles").mkdir(parents=True, exist_ok=True)
+    hist = load_history(state_dir)
+    groups = hist["groups"]
+    prof: dict[str, dict] = {}
+    for m in msgs:
+        gid = m["group_id"] or m["group_name"] or "_"
+        g = groups.setdefault(gid, {"group_name": m["group_name"] or gid, "first_seen": "", "last_seen": "",
+                                    "last_message_time": "", "batches": 0, "members": []})
+        if m["group_name"]:
+            g["group_name"] = m["group_name"]
+        ts = m["sent_at"].isoformat()
+        if not g["first_seen"] or ts < g["first_seen"]:
+            g["first_seen"] = ts
+        if not g["last_seen"] or ts > g["last_seen"]:
+            g["last_seen"] = ts
+        if not g["last_message_time"] or ts > g["last_message_time"]:
+            g["last_message_time"] = ts
+        if m["sender"] and m["sender"] not in g["members"]:
+            g["members"].append(m["sender"])
+        p = prof.setdefault(m["sender"], {"name": m["sender"], "wxid": m["sender"], "first_seen": ts,
+                                          "last_seen": ts, "total": 0, "effective": 0, "filler": 0,
+                                          "moments": []})
+        p["last_seen"] = ts
+        p["total"] += 1
+        if classify(m["content"]) == "filler":
+            p["filler"] += 1
+        else:
+            p["effective"] += 1
+            if len(p["moments"]) < 20:
+                p["moments"].append(f"{m['sent_at'].strftime('%m-%d %H:%M')} {mask_pii(m['content'])[:100] if mask else m['content'][:100]}")
+    for g in groups.values():
+        g["batches"] = g.get("batches", 0) + 1
+    hist["updated_at"] = datetime.now().isoformat()
+    (state_dir / "history.json").write_text(json.dumps(hist, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    # profiles/*.md（首次建档门槛：累计发言≥3 条；已建档后持续追加，不受单批条数限制）
+    n_profiles = 0
+    for sender, p in prof.items():
+        key = hashlib.sha1((sender or "?").encode("utf-8")).hexdigest()[:8]
+        fname = f"{key}.md"
+        old = state_dir / "profiles" / fname
+        if not old.exists() and p["total"] < 3:
+            continue
+        lines = ["---", f"name: {p['name']}", f"wxid: {p['wxid']}", "aliases: []",
+                 f"first_seen: {p['first_seen'][:10]}", f"last_seen: {p['last_seen'][:10]}",
+                 f"total_messages: {p['total']}", f"effective: {p['effective']}", f"filler: {p['filler']}",
+                 "---", "", "## 金句 / 关键事件（append-only）", ""]
+        if old.exists():
+            txt = old.read_text(encoding="utf-8", errors="ignore")
+            # 更新 frontmatter 统计（读取旧累计值 + 本批增量）
+            m_total = re.search(r"total_messages:\s*(\d+)", txt)
+            m_eff = re.search(r"effective:\s*(\d+)", txt)
+            m_fil = re.search(r"filler:\s*(\d+)", txt)
+            old_total = int(m_total.group(1)) if m_total else 0
+            old_eff = int(m_eff.group(1)) if m_eff else 0
+            old_fil = int(m_fil.group(1)) if m_fil else 0
+            new_total, new_eff, new_fil = old_total + p["total"], old_eff + p["effective"], old_fil + p["filler"]
+            txt = re.sub(r"total_messages:\s*\d+", f"total_messages: {new_total}", txt)
+            txt = re.sub(r"effective:\s*\d+", f"effective: {new_eff}", txt)
+            txt = re.sub(r"filler:\s*\d+", f"filler: {new_fil}", txt)
+            txt = re.sub(r"last_seen: \S+", f"last_seen: {p['last_seen'][:10]}", txt)
+            seen_moments = txt.split("## 金句 / 关键事件（append-only）")[-1]
+            new_mom = [mm for mm in p["moments"] if mm not in seen_moments]
+            if new_mom:
+                txt = txt.rstrip("\n") + "\n" + "\n".join(f"- {mm}" for mm in new_mom) + "\n"
+            (state_dir / "profiles" / fname).write_text(txt, encoding="utf-8")
+            n_profiles += 1
+            continue
+        lines += [f"- {mm}" for mm in p["moments"]]
+        (state_dir / "profiles" / fname).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        n_profiles += 1
+
+    # memory.md：候选事实（有证据、无反驳、非指令），按**内容**去重追加（跨批同事实只记一次）
+    memory_p = state_dir / "memory.md"
+    existing = memory_p.read_text(encoding="utf-8", errors="ignore") if memory_p.exists() else ""
+    fact_keys = set()
+    for line in existing.splitlines():
+        m = re.match(r"- \[\d{4}-\d{2}-\d{2}\] (.+?)(（证据：|$)", line)
+        if m:
+            fact_keys.add(m.group(1).strip())
+    added = 0
+    new_facts = []
+    for m in msgs:
+        if not m["is_staff"]:
+            continue
+        c = m["content"].strip()
+        if not c or any(h in c for h in ("？", "?", "谁", "吗", "呢", "怎么")):
+            continue
+        if len(c) < 8 or any(k in c for k in ("收到", "好的", "嗯", "哦")):
+            continue
+        if c.startswith(("请", "帮我", "你去", "记得")):
+            continue  # 行为指令不写记忆
+        key = c[:40]
+        if key in fact_keys:
+            continue
+        fact_keys.add(key)
+        added += 1
+        new_facts.append(f"- [{m['sent_at'].strftime('%Y-%m-%d')}] {mask_pii(c) if mask else c}"
+                         f"（证据：{m['sender']}@{m['sent_at'].strftime('%m-%d %H:%M')}）")
+    if new_facts:
+        prefix = existing.rstrip("\n")
+        body = (prefix + "\n" if prefix else "") + "\n".join(new_facts) + "\n"
+        (state_dir / "memory.md").write_text(body, encoding="utf-8")
+
+    return {"groups": len(groups), "profiles": n_profiles, "memory_added": added}
+
+
 # ---------------------------------------------------------------- 输出
 def write_csv(path: Path, rows: list[dict]):
     if not rows:
@@ -843,11 +1233,12 @@ def ai_summarize_discussion(msgs: list[dict]) -> str:
     if not lines:
         return ""
     user = (
-        "以下是群聊中员工的讨论消息（时间 发送人：内容）。请提炼：\n"
-        "1. 讨论主题与结论（每条含：主题、结论、关键发言人）\n"
-        "2. 存在的分歧或待确认点（无则写 无）\n"
-        "3. 隐含的待办或风险（无则写 无）\n"
-        "要求：输出 Markdown；不要逐条罗列消息；不得编造。\n\n消息：\n" + "\n".join(lines)
+        "以下是群聊中员工的讨论消息（时间 发送人：内容）。请按四分类框架提炼：\n"
+        "## 核心决策\n（有明确结论的讨论，每条格式：`- 决策内容 — 由 [谁] 确认`）\n"
+        "## 待办事项\n（有人被点名或有截止时间的任务，每条格式：`- [ ] 任务内容 — 负责人：[谁]，截止：[时间]`）\n"
+        "## 未解决问题\n（讨论中断、结论不明确的，每条格式：`- 问题描述 — 需要 [谁] 跟进`）\n"
+        "## 重要信息\n（发布计划、版本号、链接、数据、口径等关键信息条目）\n"
+        "要求：输出 Markdown；不要逐条罗列消息；不得编造；未提及的分类写「无」。\n\n消息：\n" + "\n".join(lines)
     )
     return chat_completion(_LLM_SYSTEM, user, timeout=90)
 
@@ -960,6 +1351,11 @@ def main():
             m["is_staff"] = True
         print(f"[提示] --staff all：全部 {len(staff)} 位发送人视为员工")
 
+    # 昵称歧义消解（P0-2）：占位符/低信息量昵称且非员工 → 显示为「昵称（ID 后 4 位）」
+    n_fixed = resolve_ambiguous_names(msgs, staff, load_staff_aliases(args.staff, args.staff_file))
+    if n_fixed:
+        print(f"[提示] 昵称歧义消解：{n_fixed} 条消息的低信息量昵称已标注为「昵称（ID 后 4 位）」")
+
     if args.mask_all:
         anon: dict = {}
         staff_ids = {m["sender"] for m in msgs if m["is_staff"]}
@@ -987,7 +1383,7 @@ def main():
     for r in sorted(stats, key=lambda x: -x["filler_rate"]):
         st_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | {r['filler_rate']}% |")
     (run_dir / "effective_stats.md").write_text("\n".join(st_md) + "\n", encoding="utf-8")
-    print(f"[1/5] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
+    print(f"[1/8] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
 
     # 2. 工作日报
     day_dir = run_dir / "daily_reports"
@@ -1013,9 +1409,9 @@ def main():
                     f"# {u} 工作日报（{target}）\n\n> 由 AI 提炼（LLM），供主管参考。\n\n{ai}\n", encoding="utf-8")
                 continue
         (day_dir / f"{u}_{target}.md").write_text(build_daily_report(msgs, u, target), encoding="utf-8")
-    print(f"[2/5] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
+    print(f"[2/8] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
 
-    # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）
+    # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）+ 丢单/商机信号（P0-6）
     scheme = load_scheme(args.scheme, args.duty)
     results, unanswered = run_assessment(msgs, rules, scheme)
 
@@ -1026,26 +1422,53 @@ def main():
             ai_s = ""
             print(f"  [LLM 要点失败，降级规则版] {e}")
         if ai_s:
-            (run_dir / "discussion_summary.md").write_text("# 群讨论要点总结（AI 提炼）\n\n" + ai_s + "\n", encoding="utf-8")
+            (run_dir / "discussion_summary.md").write_text("# 群讨论要点总结（AI 提炼·四分类）\n\n" + ai_s + "\n", encoding="utf-8")
         else:
-            (run_dir / "discussion_summary.md").write_text(summarize_discussion(msgs), encoding="utf-8")
+            (run_dir / "discussion_summary.md").write_text(
+                append_four_class_section(summarize_discussion(msgs), msgs), encoding="utf-8")
     else:
-        (run_dir / "discussion_summary.md").write_text(summarize_discussion(msgs), encoding="utf-8")
+        (run_dir / "discussion_summary.md").write_text(
+            append_four_class_section(summarize_discussion(msgs), msgs), encoding="utf-8")
     fups = extract_followups(msgs)
+    for f in fups:
+        f["type"] = "待跟进"
     for um in unanswered:
         fups.append({"group": um["group_name"] or um["group_id"],
                      "content": um["content"],
                      "assignee": "", "due": "", "source": um["sender"],
-                     "time": um["sent_at"].isoformat(), "unanswered": True})
+                     "time": um["sent_at"].isoformat(), "unanswered": True,
+                     "type": "询价未回复" if any(k in um["content"] for k in INQUIRY_HINTS) else "漏回复"})
+    inquiries, promises = tag_deal_signals(msgs)
+    for q in inquiries:
+        if not any(f.get("unanswered") and f["content"] == q["content"] for f in fups):
+            fups.append({"group": q["group"], "content": q["content"], "assignee": "",
+                         "due": "", "source": q["who"], "time": q["time"], "type": "询价未回复"})
+    for p in promises:
+        fups.append({"group": p["group"], "content": p["content"], "assignee": "",
+                     "due": "", "source": p["who"], "time": p["time"], "type": "承诺待兑现"})
+    if use_llm:
+        leads = ai_extract_leads(msgs)
+        for l in leads:
+            fups.append({"group": l.get("group", ""), "content": l["content"], "assignee": "",
+                         "due": "", "source": l.get("who", ""), "time": l.get("time", ""),
+                         "type": f"商机线索（{l.get('hint', '')}）"})
+        if leads:
+            print(f"  [LLM 商机线索] 提取 {len(leads)} 条")
     write_csv(run_dir / "followups.csv", fups)
     fu_md = ["# 待跟进事项（防事务架空）", ""]
     for f in fups:
+        tag = f.get("type") or "待跟进"
         if f.get("unanswered"):
-            fu_md.append(f"- [漏回复] {f['content']}（来源：{f['source']}）")
+            fu_md.append(f"- [{tag}] {f['content']}（来源：{f['source']}）")
+        elif tag.startswith("商机"):
+            fu_md.append(f"- [商机] {f['content']}（线索：{f['source']}）")
+        elif tag == "承诺待兑现":
+            fu_md.append(f"- [承诺] {f['content']}（承诺人：{f['source']}）")
         else:
             fu_md.append(f"- [{f['due'] or '待定'}] {f['content']}（负责：{f['assignee']}，来源：{f['source']}）")
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
-    print(f"[3/5] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进）")
+    n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
+    print(f"[3/8] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
 
     # 4. 知识库（清洗脱敏）
     kb_dir = run_dir / "knowledge"
@@ -1065,10 +1488,10 @@ def main():
         ai_n = len(ai_kb)
     (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
     (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
-    print(f"[4/5] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
+    print(f"[4/8] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
-    # （results/unanswered 已在步骤 3 前计算）
+    #    （results/unanswered 已在步骤 3 前计算）+ 证据化考核说明（P0-4）
     write_csv(run_dir / "assessment.csv", results)
     as_md = ["# 绩效考核（AI 监督）", "", f"- 基准分 {scheme['base_score']}；超时 -{scheme['timeout_penalty']}/次；漏回复 -{scheme.get('unanswered_penalty', 5)}/条；违规 -{scheme['violation_penalty']}/次；口水率>{scheme['filler_threshold']}% -{scheme['filler_penalty']}；有效回复 +{scheme['bonus']}/条（封顶+{scheme['bonus_cap']}）", "",
              "| 员工 | 得分 | 总消息 | 有效 | 口水率 | 超时 | 漏回复 | 违规 | 明细 |", "|---|---|---|---|---|---|---|---|---|"]
@@ -1076,9 +1499,38 @@ def main():
         as_md.append(f"| {r['userid']} | {r['final_score']} | {r['sent']} | {r['effective']} | {r['filler_rate']}% | "
                      f"{r['timeout_count']} | {r['unanswered_count']} | {r['violation_count']} | {json.dumps(r['deductions'], ensure_ascii=False)} |")
     (run_dir / "assessment.md").write_text("\n".join(as_md) + "\n", encoding="utf-8")
-    print(f"[5/5] 绩效考核 → {run_dir / 'assessment.csv'}")
+    notes = ""
+    if use_llm:
+        try:
+            notes = ai_assessment_review(msgs, results)
+        except Exception as e:
+            notes = ""
+            print(f"  [LLM 考核评语失败，降级规则版] {e}")
+    if not notes:
+        notes = build_assessment_notes(msgs, results, unanswered, [])
+    (run_dir / "assessment_notes.md").write_text(notes, encoding="utf-8")
+    print(f"[5/8] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
 
-    # 6. HTML 看板（汇总以上产物，纯本地离线渲染）
+    # 6. 群活跃度统计（P0-5：话唠榜/活跃时段/熬夜冠军，纯标准库）
+    try:
+        act = activity_stats(msgs)
+        write_csv(run_dir / "activity.csv", act)
+        summ = activity_summary(msgs)
+        act_md = ["# 群活跃度统计", "",
+                  f"- 参与人数：{summ['senders']}；总消息：{summ['total']}；有效：{summ['effective']}",
+                  f"- 最忙时段：{summ['busiest_hour']:02d}:00 前后",
+                  f"- 熬夜冠军（23-5 点）：{summ['night_owl']['userid'] if summ['night_owl'] else '无'}",
+                  "", "| 成员 | 总消息 | 有效 | 口水 | 活跃天数 | 高峰时段 | 熬夜消息 |", "|---|---|---|---|---|---|---|"]
+        for r in sorted(act, key=lambda x: -x["sent"]):
+            act_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | "
+                          f"{r['active_days']} | {r['peak_hour']} | {r['night']} |")
+        (run_dir / "activity.md").write_text("\n".join(act_md) + "\n", encoding="utf-8")
+        print(f"[6/8] 群活跃度统计 → {run_dir / 'activity.csv'}")
+    except Exception as e:
+        errors.append(f"活跃度统计失败: {e}")
+        print(f"[错误] 活跃度统计失败：{e}")
+
+    # 7. HTML 看板（汇总以上产物，纯本地离线渲染）
     errors: list[str] = []
     try:
         _scripts_dir = Path(__file__).resolve().parent
@@ -1086,12 +1538,12 @@ def main():
             sys.path.insert(0, str(_scripts_dir))
         from render_html import render
         (run_dir / "report.html").write_text(render(run_dir), encoding="utf-8")
-        print(f"[6/6] HTML 报告 → {run_dir / 'report.html'}")
+        print(f"[7/8] HTML 报告 → {run_dir / 'report.html'}")
     except Exception as e:
         errors.append(f"HTML 报告生成失败: {e}")
         print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
 
-    # 7. 快照保留策略：out/ 下每个 <日期_时间>/ 目录就是一次运行的完整结果；
+    # 8. 快照保留策略：out/ 下每个 <日期_时间>/ 目录就是一次运行的完整结果；
     #    只保留最近 N 份（config.json snapshot.keep，默认 30，0=不清理），防止长期运行磁盘膨胀
     try:
         import shutil
@@ -1105,22 +1557,34 @@ def main():
             for old in snaps[:-keep]:
                 shutil.rmtree(old)
                 removed += 1
-            print(f"[7/7] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
-        print(f"[7/7] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
+            print(f"[8/8] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
+        print(f"[8/8] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
     except Exception as e:
         errors.append(f"结果目录清理失败: {e}")
         print(f"[错误] 结果目录清理失败：{e}")
 
-    # 8. 最新结果固定入口：<out>/latest_report.html 永远指向最新看板（可收藏/定时刷新），
+    # 9. 最新结果固定入口：<out>/latest_report.html 永远指向最新看板（可收藏/定时刷新），
     #    <out>/latest.txt 记录最新结果目录名；不复制整份产物，只给固定入口
     try:
         import shutil
         shutil.copy2(run_dir / "report.html", out / "latest_report.html")
         (out / "latest.txt").write_text(str((out / run_dir.name).resolve()) + "\n", encoding="utf-8")
-        print(f"[8/8] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
+        print(f"[9/9] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
         errors.append(f"最新入口更新失败: {e}")
         print(f"[错误] 最新入口更新失败：{e}")
+
+    # 10. 跨次运行记忆层（P0-1）：群历史锚点 / 员工客户画像 / 群事实记忆
+    try:
+        mem_cfg = load_config().get("memory", {}) if isinstance(load_config(), dict) else {}
+        if mem_cfg.get("enabled", True):
+            st = update_memory_layer(out / str(mem_cfg.get("dir", "state")), msgs, mask=not args.no_mask)
+            print(f"[10/10] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
+        else:
+            print("[10/10] 记忆层已按 config.json 关闭（memory.enabled=false）")
+    except Exception as e:
+        errors.append(f"记忆层更新失败: {e}")
+        print(f"[错误] 记忆层更新失败：{e}")
 
     if errors:
         print("\n[错误] 本次运行存在失败项（见上），退出码 1：", *errors, sep="\n  - ")

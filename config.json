@@ -3,6 +3,16 @@
     "keep": 30,
     "comment": "archive/ 下保留最近 N 份快照，超出自动清理；0 = 不限制、永久保留"
   },
+  "memory": {
+    "enabled": true,
+    "dir": "state",
+    "comment": "跨次运行记忆层（P0-1）：每次 all 运行后更新 out/state/ —— history.json 群历史锚点（增量日报依据）、profiles/*.md 员工/客户画像（发言≥3条才更新）、memory.md 群事实记忆（具体事实+有证据+无反驳才写入）。关掉 enabled 即禁用"
+  },
+  "activity": {
+    "enabled": true,
+    "wordcloud": false,
+    "comment": "群活跃度统计（P0-5）：话唠榜/活跃天数/高峰时段/熬夜冠军，纯标准库。wordcloud（词云）依赖 jieba，pip 可用时再开，默认关"
+  },
   "output": {
     "default_out": "chat_archive_output",
     "comment": "业务层脚本 --out 的默认输出目录"
