@@ -51,6 +51,16 @@ ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060]")
 ORDER_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z])(\d{4,10})([A-Za-z])(?![A-Za-z0-9])")
 
 
+def _read_text_any(path: Path) -> str:
+    """读取文本文件：优先 utf-8，失败回退 GB18030/GBK（Windows 微信导出常见编码）。"""
+    for enc in ("utf-8", "gb18030", "gbk"):
+        try:
+            return path.read_text(encoding=enc)
+        except UnicodeDecodeError:
+            continue
+    return path.read_text(encoding="utf-8", errors="ignore")
+
+
 def clean_text(s: str) -> str:
     s = ZERO_WIDTH.sub("", s or "")
     # 去刷屏：连续相同行只保留 1 条（在消息级去重）
@@ -169,7 +179,7 @@ def _norm_time(v) -> str:
 
 
 def _parse_txt_md(path: Path) -> list[dict] | None:
-    raw = path.read_text(encoding="utf-8", errors="ignore")
+    raw = _read_text_any(path)
     out, cur_gid, cur_gname, matched = [], "", "", False
     pending = None  # QQ 两行式：上一行(时间+发送人)，下一行是内容
     for line in raw.splitlines():
@@ -218,7 +228,7 @@ def _parse_txt_md(path: Path) -> list[dict] | None:
 
 def _parse_json(path: Path) -> list[dict] | None:
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+        data = json.loads(_read_text_any(path))
     except Exception:
         raise ValueError(f"JSON 解析失败: {path.name}")
     if isinstance(data, dict):
@@ -271,7 +281,7 @@ def _parse_json(path: Path) -> list[dict] | None:
 
 
 def _parse_csv(path: Path) -> list[dict] | None:
-    raw = path.read_text(encoding="utf-8", errors="ignore")
+    raw = _read_text_any(path)
     reader = csv.DictReader(io.StringIO(raw))
     if not reader.fieldnames:
         return None
@@ -365,29 +375,57 @@ def _convert_via_tool(src: Path, tool_cmd: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------- 员工识别
+def _split_aliases(line: str) -> tuple[str, list[str]]:
+    """名单行支持别名：`张三|小张|zhangsan` → (规范名, [别名...])。"""
+    parts = [pt.strip() for pt in line.split("|")]
+    return parts[0], parts[1:]
+
+
 def load_staff(staff_arg: str, staff_file: str) -> set[str]:
-    """员工名单：--staff 支持三种写法——逗号名单 / all / 名单文件路径。"""
+    """员工名单：--staff 支持三种写法——逗号名单 / all / 名单文件路径（文件每行一个，可带 | 别名）。"""
     names = set()
     if staff_arg and staff_arg.strip().lower() != "all":
         maybe_file = Path(staff_arg)
         if maybe_file.is_file():
-            for line in maybe_file.read_text(encoding="utf-8").splitlines():
+            for line in _read_text_any(maybe_file).splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    names.add(line)
+                    names.add(_split_aliases(line)[0])
         else:
             for n in re.split(r"[，,、\s]+", staff_arg):
                 if n.strip():
                     names.add(n.strip())
     if staff_file:
-        for line in Path(staff_file).read_text(encoding="utf-8").splitlines():
+        for line in _read_text_any(Path(staff_file)).splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                names.add(line)
+                names.add(_split_aliases(line)[0])
     return names
 
 
-def normalize_messages(items: list[dict], staff: set[str]) -> list[dict]:
+def load_staff_aliases(staff_arg: str, staff_file: str) -> dict[str, str]:
+    """别名映射 {别名: 规范名}：微信昵称常改，任一别名命中即视为该员工。"""
+    aliases: dict[str, str] = {}
+
+    def _scan(path: Path):
+        for line in _read_text_any(path).splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                name, als = _split_aliases(line)
+                for a in als:
+                    if a:
+                        aliases[a] = name
+
+    if staff_arg and staff_arg.strip().lower() != "all":
+        maybe_file = Path(staff_arg)
+        if maybe_file.is_file():
+            _scan(maybe_file)
+    if staff_file:
+        _scan(Path(staff_file))
+    return aliases
+
+
+def normalize_messages(items: list[dict], staff: set[str], alias_map: dict[str, str] | None = None) -> list[dict]:
     out = []
     seen = set()
     for it in items:
@@ -401,7 +439,9 @@ def normalize_messages(items: list[dict], staff: set[str]) -> list[dict]:
             continue
         seen.add(mid)
         sender = it.get("sender_userid") or it.get("sender_name") or ""
-        is_staff = sender in staff or it.get("sender_name", "") in staff
+        am = alias_map or {}
+        is_staff = (sender in staff or it.get("sender_name", "") in staff
+                    or sender in am or it.get("sender_name", "") in am)
         out.append({
             "msg_id": mid,
             "group_id": it.get("group_id") or it.get("group_name") or "",
@@ -614,7 +654,7 @@ DEFAULT_RULES = [
 def load_rules(rules_file: str) -> list[dict]:
     """合规规则优先级：--rules-file 命令行 > config.json assessment.rules > 内置默认。"""
     if rules_file:
-        data = json.loads(Path(rules_file).read_text(encoding="utf-8"))
+        data = json.loads(_read_text_any(Path(rules_file)))
         return [{"name": r["name"], "pattern": r["pattern"], "level": r.get("level", "medium")} for r in data]
     cfg = load_config()
     a = cfg.get("assessment") if isinstance(cfg, dict) else None
@@ -644,6 +684,9 @@ def load_scheme(scheme_arg: str = "", duty_arg: str = "") -> dict:
             if k in scheme and v.strip().lstrip("-").isdigit():
                 scheme[k] = int(v.strip())
     scheme["duty"] = {}
+    a = load_config().get("assessment") if isinstance(load_config(), dict) else None
+    if isinstance(a, dict) and isinstance(a.get("duty"), dict):
+        scheme["duty"].update({str(k): str(v) for k, v in a["duty"].items() if v})
     if duty_arg:
         for kv in duty_arg.split(","):
             g, _, s = kv.partition(":")
@@ -658,33 +701,56 @@ def detect_violations(content: str, rules: list[dict] | None = None) -> list[dic
 
 
 # ---------------------------------------------------------------- 绩效考核
-def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> list[dict]:
+QUESTION_RE = re.compile(r"[？?]|在吗|在不在|多少|怎么|如何|能不能|可以吗|行不行|有没有|是否|什么时候|请问|几号|多久到|能退|能换|发货")
+
+
+def is_question(content: str) -> bool:
+    """提问类消息判定：客户消息天然算；员工消息带问句/咨询词也算（提问无人理=事务架空）。"""
+    return bool(QUESTION_RE.search(content or ""))
+
+
+def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> tuple[list[dict], list[dict]]:
+    """绩效考核 + 漏回复检测。返回 (考核结果, 漏回复的客户消息列表)。
+
+    配对规则（修复跨群错配 + 口水不算回复）：
+      - 按群分组配对，A 群客户提问不会跟 B 群员工回复配对；
+      - 员工"收到/好的/👍"等口水消息不算回复，pend 保留继续等实质回复；
+      - 客户提问直到群末仍无实质回复 → 记为漏回复（防丢单/消极怠工核心指标）。
+    """
     wait = scheme.get("timeout_sec", 300)
-    # 回复配对与超时
-    pairs = []
-    pend = None
+    unanswered_penalty = scheme.get("unanswered_penalty", 5)
+    duty = scheme.get("duty", {})  # {group_id 或 group_name: staff}
+    groups: dict[str, list[dict]] = OrderedDict()
     for m in msgs:
-        if m["is_staff"]:
-            if pend:
-                latency = (m["sent_at"] - pend["sent_at"]).total_seconds()
-                pairs.append({"customer": pend, "staff": m, "latency": latency,
-                              "status": "timeout" if latency > wait else "answered"})
-            pend = None
-        else:
-            if pend is None:
-                pend = m
-            # 多条客户消息取第一条作为提问（简化为覆盖式：保留最早）
-    for m in msgs:
-        if not m["is_staff"] and not any(p["customer"]["msg_id"] == m["msg_id"] for p in pairs):
-            pass
-    duty = scheme.get("duty", {})  # {group_id: staff}
+        groups.setdefault(m["group_id"] or m["group_name"] or "_", []).append(m)
+    pairs: list[dict] = []
+    unanswered: list[dict] = []
+    for gmsgs in groups.values():
+        pend = None
+        for m in gmsgs:
+            if m["is_staff"]:
+                if pend and classify(m["content"]) == "substantive":
+                    latency = (m["sent_at"] - pend["sent_at"]).total_seconds()
+                    pairs.append({"customer": pend, "staff": m, "latency": latency,
+                                  "status": "timeout" if latency > wait else "answered"})
+                    pend = None
+                # 员工口水消息不算回复，继续等；员工问句本身也算提问（待实质回复）
+                if pend is None and is_question(m["content"]):
+                    pend = m
+            else:
+                if pend is None:
+                    pend = m
+                # 多条客户消息取第一条（保留最早）
+        if pend is not None:
+            unanswered.append(pend)
     rows: dict[str, dict] = OrderedDict()
     for m in msgs:
         if not m["is_staff"]:
             continue
         r = rows.setdefault(m["sender"], {"userid": m["sender"], "base": scheme["base_score"],
                                           "sent": 0, "effective": 0, "filler": 0,
-                                          "timeouts": 0, "violations": 0, "hits": []})
+                                          "timeouts": 0, "unanswered": 0,
+                                          "violations": 0, "hits": []})
         r["sent"] += 1
         if classify(m["content"]) == "filler":
             r["filler"] += 1
@@ -696,9 +762,15 @@ def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> list[di
     for p in pairs:
         if p["status"] != "timeout":
             continue
-        owner = duty.get(p["customer"]["group_id"], "")
+        owner = (duty.get(p["customer"]["group_id"], "") or duty.get(p["customer"]["group_name"], "")
+                 or duty.get("*", ""))
         if owner and owner in rows:
             rows[owner]["timeouts"] += 1
+    for um in unanswered:
+        owner = (duty.get(um["group_id"], "") or duty.get(um["group_name"], "")
+                 or duty.get("*", ""))
+        if owner and owner in rows:
+            rows[owner]["unanswered"] += 1
     results = []
     for r in rows.values():
         score = r["base"]
@@ -707,6 +779,10 @@ def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> list[di
             pen = scheme["timeout_penalty"] * r["timeouts"]
             score -= pen
             d["回复超时"] = -pen
+        if r["unanswered"]:
+            pen = unanswered_penalty * r["unanswered"]
+            score -= pen
+            d["漏回复"] = -pen
         if r["violations"]:
             pen = scheme["violation_penalty"] * r["violations"]
             score -= pen
@@ -722,9 +798,10 @@ def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> list[di
             d["有效回复加分"] = bonus
         results.append({"userid": r["userid"], "base_score": r["base"], "final_score": max(0, min(150, score)),
                         "sent": r["sent"], "effective": r["effective"], "filler_rate": rate,
-                        "timeout_count": r["timeouts"], "violation_count": r["violations"],
+                        "timeout_count": r["timeouts"], "unanswered_count": r["unanswered"],
+                        "violation_count": r["violations"],
                         "hits": list(dict.fromkeys(r["hits"])), "deductions": d})
-    return results
+    return results, unanswered
 
 
 # ---------------------------------------------------------------- 输出
@@ -732,8 +809,9 @@ def write_csv(path: Path, rows: list[dict]):
     if not rows:
         path.write_text("(无数据)\n", encoding="utf-8")
         return
+    fieldnames = list(dict.fromkeys(k for r in rows for k in r.keys()))
     with open(path, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
             wr = dict(r)
@@ -860,9 +938,8 @@ def main():
         _scripts_dir = Path(__file__).resolve().parent
         if str(_scripts_dir) not in sys.path:
             sys.path.insert(0, str(_scripts_dir))
-        from sync_kb import main as kb_main
-        sys.argv = ["sync_kb", "--out", str(out)] + ([f"--config={args.kb_config}"] if getattr(args, "kb_config", "") else [])
-        kb_main()
+        from sync_kb import run as kb_run
+        kb_run(str(out), args.kb_config, "all")
         return
 
     staff = load_staff(args.staff, args.staff_file)
@@ -871,7 +948,7 @@ def main():
         print("[警告] 未提供员工名单（--staff all/名单/文件），所有发送人均视为客户。")
 
     items, fmts = load_input(args.input, args.tool_cmd)
-    msgs = normalize_messages(items, staff)
+    msgs = normalize_messages(items, staff, load_staff_aliases(args.staff, args.staff_file))
     print(f"输入：{len(items)} 条原始消息 → {len(msgs)} 条有效消息（格式: {fmts or '未知'}）")
     if not msgs:
         print("[错误] 未解析出有效消息。请检查输入格式（TXT/MD/JSON/CSV）或加密备份配置 --tool-cmd。")
@@ -938,7 +1015,10 @@ def main():
         (day_dir / f"{u}_{target}.md").write_text(build_daily_report(msgs, u, target), encoding="utf-8")
     print(f"[2/5] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
 
-    # 3. 讨论要点 + 跟进
+    # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）
+    scheme = load_scheme(args.scheme, args.duty)
+    results, unanswered = run_assessment(msgs, rules, scheme)
+
     if use_llm:
         try:
             ai_s = ai_summarize_discussion(msgs)
@@ -952,10 +1032,18 @@ def main():
     else:
         (run_dir / "discussion_summary.md").write_text(summarize_discussion(msgs), encoding="utf-8")
     fups = extract_followups(msgs)
+    for um in unanswered:
+        fups.append({"group": um["group_name"] or um["group_id"],
+                     "content": um["content"],
+                     "assignee": "", "due": "", "source": um["sender"],
+                     "time": um["sent_at"].isoformat(), "unanswered": True})
     write_csv(run_dir / "followups.csv", fups)
     fu_md = ["# 待跟进事项（防事务架空）", ""]
     for f in fups:
-        fu_md.append(f"- [{f['due'] or '待定'}] {f['content']}（负责：{f['assignee']}，来源：{f['source']}）")
+        if f.get("unanswered"):
+            fu_md.append(f"- [漏回复] {f['content']}（来源：{f['source']}）")
+        else:
+            fu_md.append(f"- [{f['due'] or '待定'}] {f['content']}（负责：{f['assignee']}，来源：{f['source']}）")
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
     print(f"[3/5] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进）")
 
@@ -980,14 +1068,13 @@ def main():
     print(f"[4/5] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
-    scheme = load_scheme(args.scheme, args.duty)
-    results = run_assessment(msgs, rules, scheme)
+    # （results/unanswered 已在步骤 3 前计算）
     write_csv(run_dir / "assessment.csv", results)
-    as_md = ["# 绩效考核（AI 监督）", "", f"- 基准分 {scheme['base_score']}；超时 -{scheme['timeout_penalty']}/次；违规 -{scheme['violation_penalty']}/次；口水率>{scheme['filler_threshold']}% -{scheme['filler_penalty']}；有效回复 +{scheme['bonus']}/条（封顶+{scheme['bonus_cap']}）", "",
-             "| 员工 | 得分 | 总消息 | 有效 | 口水率 | 超时 | 违规 | 明细 |", "|---|---|---|---|---|---|---|---|"]
+    as_md = ["# 绩效考核（AI 监督）", "", f"- 基准分 {scheme['base_score']}；超时 -{scheme['timeout_penalty']}/次；漏回复 -{scheme.get('unanswered_penalty', 5)}/条；违规 -{scheme['violation_penalty']}/次；口水率>{scheme['filler_threshold']}% -{scheme['filler_penalty']}；有效回复 +{scheme['bonus']}/条（封顶+{scheme['bonus_cap']}）", "",
+             "| 员工 | 得分 | 总消息 | 有效 | 口水率 | 超时 | 漏回复 | 违规 | 明细 |", "|---|---|---|---|---|---|---|---|---|"]
     for r in sorted(results, key=lambda x: -x["final_score"]):
         as_md.append(f"| {r['userid']} | {r['final_score']} | {r['sent']} | {r['effective']} | {r['filler_rate']}% | "
-                     f"{r['timeout_count']} | {r['violation_count']} | {json.dumps(r['deductions'], ensure_ascii=False)} |")
+                     f"{r['timeout_count']} | {r['unanswered_count']} | {r['violation_count']} | {json.dumps(r['deductions'], ensure_ascii=False)} |")
     (run_dir / "assessment.md").write_text("\n".join(as_md) + "\n", encoding="utf-8")
     print(f"[5/5] 绩效考核 → {run_dir / 'assessment.csv'}")
 
@@ -1029,7 +1116,7 @@ def main():
     try:
         import shutil
         shutil.copy2(run_dir / "report.html", out / "latest_report.html")
-        (out / "latest.txt").write_text(run_dir.name + "\n", encoding="utf-8")
+        (out / "latest.txt").write_text(str((out / run_dir.name).resolve()) + "\n", encoding="utf-8")
         print(f"[8/8] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
         errors.append(f"最新入口更新失败: {e}")

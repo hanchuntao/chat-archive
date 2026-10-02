@@ -268,8 +268,11 @@ def _render_followups(rows: list[dict]) -> str:
             overdue = bool(due) and datetime.strptime(due, "%Y-%m-%d").date() < today
         except ValueError:
             overdue = False
-        badge = '<span class="badge bad">已过期</span>' if overdue else (
-            f'<span class="tag">{escape(due or "待定")}</span>')
+        if r.get("unanswered"):
+            badge = '<span class="badge bad">漏回复</span>'
+        else:
+            badge = '<span class="badge bad">已过期</span>' if overdue else (
+                f'<span class="tag">{escape(due or "待定")}</span>')
         trs.append(
             f"<tr><td>{escape(r.get('group',''))}</td>"
             f"<td>{escape(r.get('assignee',''))}</td>"

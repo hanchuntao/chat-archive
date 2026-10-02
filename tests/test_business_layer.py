@@ -116,7 +116,7 @@ def test_full_run_single_result_and_latest(tmp_path):
 
     # latest 固定入口
     assert (out / "latest_report.html").exists()
-    assert (out / "latest.txt").read_text(encoding="utf-8").strip() == stamp[0]
+    assert (out / "latest.txt").read_text(encoding="utf-8").strip() == str((out / stamp[0]).resolve())
 
     # 结果目录内六类产物齐全
     d = out / stamp[0]
@@ -181,3 +181,99 @@ def test_kb_sync_fake_key_exits_nonzero(tmp_path):
                        capture_output=True, text=True, timeout=40)
     assert r.returncode == 1, "ima 认证失败应非零退出"
     assert "ima API 错误" in r.stderr
+
+
+# ================= P0/P1 新功能：漏回复 / 别名 / GBK / 跨群 / duty =================
+
+def _msg(sender: str, content: str, staff: bool = True, t: str = "2026-09-01 10:00:00",
+         group: str = "群1") -> dict:
+    return {"msg_id": f"{sender}-{t}-{content[:8]}", "group_id": group, "group_name": group,
+            "sender": sender, "is_staff": staff, "content": content,
+            "sent_at": biz._parse_dt(t) or datetime.now()}
+
+
+def _scheme(**kw):
+    base = {"base_score": 100, "timeout_penalty": 5, "violation_penalty": 10,
+            "filler_threshold": 50, "filler_penalty": 5, "bonus": 1, "bonus_cap": 20,
+            "timeout_sec": 300, "unanswered_penalty": 5, "duty": {}}
+    base.update(kw)
+    return base
+
+
+def test_unanswered_customer_end_of_group():
+    """客户提问直到群末无人实质回复 → 漏回复（防丢单核心）。"""
+    msgs = [_msg("客户A", "请问什么时候发货？", staff=False, t="2026-09-01 09:00"),
+            _msg("张三", "好的", staff=True, t="2026-09-01 09:05"),   # 口水不算回复
+            _msg("张三", "今天下午发出，单号稍后发您", staff=True, t="2026-09-01 09:10"),
+            _msg("客户B", "在吗？售后电话是多少", staff=False, t="2026-09-01 20:30")]
+    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
+    assert len(unanswered) == 1 and unanswered[0]["sender"] == "客户B", "群末客户提问应判漏回复"
+    assert results[0]["unanswered_count"] == 0, "无 duty 归属不扣分"
+
+
+def test_unanswered_in_staff_all_mode():
+    """--staff all 下全员是员工，问句消息也应判漏回复（兼容零参数默认配置）。"""
+    msgs = [_msg("客户G", "在吗？售后电话是多少", staff=True, t="2026-09-01 20:30")]
+    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
+    assert len(unanswered) == 1, "all 模式下问句无人回也应判漏回复"
+
+
+def test_cross_group_no_mis_pair():
+    """A 群客户提问不跟 B 群员工回复配对（修复跨群错配 bug）。"""
+    msgs = [_msg("客户A", "多久能发货？", staff=False, t="2026-09-01 09:00", group="群A"),
+            _msg("李四", "马上安排", staff=True, t="2026-09-01 09:30", group="群B")]
+    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
+    assert len(unanswered) == 1 and unanswered[0]["group_id"] == "群A", "跨群不应配对，A 群提问应判漏回复"
+
+
+def test_duty_wildcard_deduction():
+    """duty '*' 通配：超时与漏回复都扣到值班员工头上。"""
+    msgs = [_msg("客户A", "多久能发货？", staff=False, t="2026-09-01 09:00"),
+            _msg("李四", "马上安排", staff=True, t="2026-09-01 10:00"),   # 60min > 300s 超时
+            _msg("客户B", "在吗？", staff=False, t="2026-09-01 20:30")]
+    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES,
+                                             _scheme(duty={"*": "李四"}))
+    row = [r for r in results if r["userid"] == "李四"][0]
+    assert row["timeout_count"] == 1 and row["unanswered_count"] == 1, "通配 duty 应计入超时与漏回复"
+    assert row["deductions"].get("回复超时") == -5 and row["deductions"].get("漏回复") == -5
+
+
+def test_staff_alias_mapping():
+    """名单行 `张三|小张|zhangsan`：别名命中即视为员工。"""
+    alias = biz.load_staff_aliases("", str(REPO / "tests" / "staff_aliases.txt"))
+    assert alias.get("小张") == "张三" and alias.get("zhangsan") == "张三"
+    msgs = biz.normalize_messages([
+        {"msg_id": "1", "group_id": "g", "group_name": "g", "sender_userid": "小张",
+         "sender_name": "小张", "msg_type": "text", "content": "今天把货发出",
+         "sent_at": "2026-09-01 10:00:00"},
+    ], {"张三"}, alias)
+    assert msgs[0]["is_staff"] is True, "别名 小张 应识别为员工张三"
+
+
+def test_gbk_input_parsing():
+    """Windows 微信导出的 GBK 编码文件应能解析（GB18030 回退）。"""
+    import io
+    gbk_txt = "2026-09-01 10:00 张三: 今天发货吗\n2026-09-01 10:01 客户A: 多久到？\n".encode("gb18030")
+    tmp = Path(__file__).parent / "_gbk_tmp.txt"
+    tmp.write_bytes(gbk_txt)
+    try:
+        items, fmt = biz.parse_file(tmp)
+        assert fmt == "txt" and len(items) == 2, f"GBK 解析失败: {fmt}/{len(items)}"
+        assert items[0]["content"] == "今天发货吗"
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def test_render_html_smoke(tmp_path):
+    """render_html 端到端冒烟：产物包含核心模块与漏回复红标。"""
+    out = tmp_path / "out"
+    subprocess.run(
+        [sys.executable, str(SCRIPT), "all",
+         "--input", str(REPO / "sample_data" / "ecom_chat.txt"),
+         "--staff", "all", "--out", str(out)],
+        check=True, capture_output=True, timeout=120)
+    run_dir = next(d for d in out.iterdir() if d.is_dir() and d.name != "latest_report.html")
+    html = (run_dir / "report.html").read_text(encoding="utf-8")
+    for mod in ("有效回复统计", "员工工作日报", "讨论要点", "待跟进事项", "知识库沉淀", "AI 监督绩效考核"):
+        assert mod in html, f"report.html 缺模块: {mod}"
+    assert "漏回复" in html, "跟进区应渲染漏回复红标（客户G 案例）"

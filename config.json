@@ -154,6 +154,8 @@
         "level": "high"
       }
     ],
-    "comment": "考核方案与合规规则：改这里即改考核制度（命令行 --scheme/--rules-file 可临时覆盖，优先级更高）"
+    "comment": "考核方案与合规规则：改这里即改考核制度；漏回复=客户提问直到群末无人实质回复（防丢单）；duty 填群名→值班员工（超时/漏回复扣分归属）；命令行 --scheme/--rules-file/--duty 可临时覆盖",
+    "unanswered_penalty": 5,
+    "duty": {}
   }
 }

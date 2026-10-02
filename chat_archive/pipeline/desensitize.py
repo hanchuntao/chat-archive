@@ -65,7 +65,8 @@ class Rule:
 # 中国大陆 PII 规则(默认全开)
 DEFAULT_RULES: list[Rule] = [
     Rule("cn_mobile", r"(?<!\d)(1[3-9]\d{9})(?!\d)"),                 # 手机号
-    Rule("cn_id_card", r"(?<!\d)(\d{17}[\dXx])(?!\d)"),               # 身份证
+    Rule("cn_id_card", r"(?<!\d)(\d{17}[\dXx])(?!\d)"),               # 身份证(18位)
+    Rule("cn_id_card15", r"(?<!\d)(\d{6}(?:19|20)?\d{6}\d{3})(?!\d)"),  # 身份证(15位, YYMMDD)
     Rule("bank_card", r"(?<!\d)(\d{16,19})(?!\d)"),                   # 银行卡
     Rule("email", r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}",
          replacer=_mask_email),                                       # 邮箱: 保留域名

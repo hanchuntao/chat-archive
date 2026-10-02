@@ -169,7 +169,7 @@ def _cos_upload(cred: dict, cos_key: str, file_path: Path) -> bool:
         return False
 
 
-def _upload_file(client_id: str, api_key: str, kb_id: str, path: Path) -> tuple[bool, str]:
+def _upload_file(client_id: str, api_key: str, kb_id: str, path: Path, folder_id: str = "") -> tuple[bool, str]:
     size = path.stat().st_size
     resp = _ima_post("/create_media", {
         "file_name": path.name, "file_size": size,
@@ -187,10 +187,11 @@ def _upload_file(client_id: str, api_key: str, kb_id: str, path: Path) -> tuple[
         return False, "COS 上传失败"
     finfo = {"cos_key": cred.get("cos_key", ""), "file_size": size,
              "last_modify_time": int(time.time()), "file_name": path.name}
-    resp = _ima_post("/add_knowledge", {
-        "media_type": 7, "media_id": media_id, "title": path.stem,
-        "knowledge_base_id": kb_id, "file_info": finfo,
-    }, client_id, api_key)
+    body = {"media_type": 7, "media_id": media_id, "title": path.stem,
+            "knowledge_base_id": kb_id, "file_info": finfo}
+    if folder_id:
+        body["folder_id"] = folder_id
+    resp = _ima_post("/add_knowledge", body, client_id, api_key)
     if resp.get("code") != 0:
         return False, f"add_knowledge 失败: {resp.get('msg')}"
     return True, "ok"
@@ -206,6 +207,7 @@ def sync_ima(out: Path, cfg: dict) -> str:
     if not src.exists():
         return "ima：out/knowledge/ 不存在，跳过"
     kb_name = (ima.get("knowledge_base_name") or "").strip()
+    folder_id = (ima.get("folder") or "").strip()
     kb_id, err = _find_knowledge_base(client_id, api_key, kb_name)
     if err:
         raise RuntimeError(err)
@@ -214,7 +216,7 @@ def sync_ima(out: Path, cfg: dict) -> str:
     files = sorted(src.glob("*.md"))
     ok, fail = 0, []
     for f in files:
-        succ, msg = _upload_file(client_id, api_key, kb_id, f)
+        succ, msg = _upload_file(client_id, api_key, kb_id, f, folder_id)
         if succ:
             ok += 1
         else:
@@ -227,19 +229,14 @@ def sync_ima(out: Path, cfg: dict) -> str:
 
 # ---------------------------------------------------------------- 主入口
 
-def main():
-    ap = argparse.ArgumentParser(description="知识库同步：本地 + 腾讯 ima")
-    ap.add_argument("--out", required=True, help="业务产物目录（含 knowledge/）")
-    ap.add_argument("--config", default="", help="config.json 路径（默认仓库根）")
-    ap.add_argument("--to", choices=["local", "ima", "all"], default="all",
-                    help="同步目标（默认 all）")
-    args = ap.parse_args()
-    out = Path(args.out)
-    cfg = knowledge_cfg(load_config(args.config))
+def run(out: str, config_path: str = "", to: str = "all") -> None:
+    """程序化入口（业务层直接调用，避免 sys.argv hack）。"""
+    out = Path(out)
+    cfg = knowledge_cfg(load_config(config_path))
     msgs = []
-    if args.to in ("local", "all"):
+    if to in ("local", "all"):
         msgs.append(sync_local(out, cfg))
-    if args.to in ("ima", "all"):
+    if to in ("ima", "all"):
         try:
             msgs.append(sync_ima(out, cfg))
         except RuntimeError as e:
@@ -247,6 +244,16 @@ def main():
             sys.exit(1)
     for m in msgs:
         print(m)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="知识库同步：本地 + 腾讯 ima")
+    ap.add_argument("--out", required=True, help="业务产物目录（含 knowledge/）")
+    ap.add_argument("--config", default="", help="config.json 路径（默认仓库根）")
+    ap.add_argument("--to", choices=["local", "ima", "all"], default="all",
+                    help="同步目标（默认 all）")
+    args = ap.parse_args()
+    run(args.out, args.config, args.to)
 
 
 if __name__ == "__main__":
