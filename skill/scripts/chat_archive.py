@@ -1895,6 +1895,8 @@ def session_timeline(sessions: list[dict]) -> list[dict]:
     return out
 
 
+MENTION_RE = re.compile(r"(?<![\w.+-])@([\u4e00-\u9fa5A-Za-z0-9_]{1,12})|(?<![\w.+-])@所有人")
+
 MEDIA_PLACEHOLDERS = {"[图片]": "image", "[表情]": "emoji", "[语音]": "voice",
                       "[视频]": "video", "[文件]": "file", "[链接]": "link", "[红包]": "redpack"}
 
@@ -2005,6 +2007,48 @@ def trend_compare(out: Path, run_dir: Path) -> str:
     else:
         lines += ["", "本期无新冒头问题（与上期话题集一致）。", ""]
     return "\n".join(lines)
+
+
+
+
+def mentions_stats(msgs: list[dict]) -> list[dict]:
+    """@提及统计（第4轮吸收）：被 @ 最多的关键对接人识别。纯 stdlib。"""
+    agg: dict[str, dict] = OrderedDict()
+    for m in msgs:
+        found = set()
+        for mt in MENTION_RE.findall(m["content"]):
+            target = (mt if isinstance(mt, str) else (mt[0] or "所有人")).strip()
+            if target:
+                found.add(target)
+        for target in found:
+            r = agg.setdefault(target, {"userid": target, "count": 0, "by_who": [], "last_time": ""})
+            r["count"] += 1
+            if m["sender"] not in r["by_who"]:
+                r["by_who"].append(m["sender"])
+            if m["sent_at"].isoformat() > r["last_time"]:
+                r["last_time"] = m["sent_at"].isoformat()
+    for r in agg.values():
+        r["by_who"] = "、".join(r["by_who"][:6]) + ("…" if len(r["by_who"]) > 6 else "")
+    return list(agg.values())
+
+
+def export_messages(msgs: list[dict], mask: bool = False) -> list[dict]:
+    """扁平消息表导出（第4轮吸收）：每行一条有效消息，供 Excel 透视/筛选。"""
+    anon: dict = {}
+    staff_ids = {m["sender"] for m in msgs if m["is_staff"]}
+    rows = []
+    for m in msgs:
+        c = m["content"]
+        s = m["sender"]
+        if mask:
+            c = mask_pii(c)
+            c = c.replace(s, mask_identity(s, m["is_staff"], staff_ids, anon))
+            s = anon.get(s, s)
+        rows.append({"sent_at": m["sent_at"].isoformat(), "group": m["group_name"] or m["group_id"],
+                     "sender": s, "role": "员工" if m["is_staff"] else "客户",
+                     "topic": match_topic(c) or "未分类", "content": c[:500]})
+    return rows
+
 
 
 def _customer_view(msgs: list[dict], all_mode: bool) -> list[dict]:
@@ -2236,7 +2280,7 @@ def main():
     for r in sorted(stats, key=lambda x: -x["filler_rate"]):
         st_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | {r['filler_rate']}% |")
     (run_dir / "effective_stats.md").write_text("\n".join(st_md) + "\n", encoding="utf-8")
-    print(f"[1/17] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
+    print(f"[1/1] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
 
     # 2. 工作日报
     day_dir = run_dir / "daily_reports"
@@ -2262,7 +2306,7 @@ def main():
                     f"# {u} 工作日报（{target}）\n\n> 由 AI 提炼（LLM），供主管参考。\n\n{ai}\n", encoding="utf-8")
                 continue
         (day_dir / f"{u}_{target}.md").write_text(build_daily_report(msgs, u, target), encoding="utf-8")
-    print(f"[2/17] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
+    print(f"[2/2] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
 
     # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）+ 丢单/商机信号（P0-6）
     scheme = load_scheme(args.scheme, args.duty)
@@ -2321,7 +2365,7 @@ def main():
             fu_md.append(f"- [{f['due'] or '待定'}] {f['content']}（负责：{f['assignee']}，来源：{f['source']}）")
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
     n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
-    print(f"[3/17] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
+    print(f"[3/3] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
 
     # 4. 知识库（清洗脱敏）
     kb_dir = run_dir / "knowledge"
@@ -2348,7 +2392,7 @@ def main():
             (kb_dir / "training_clean.jsonl").write_text(
                 "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
         write_csv(kb_dir / "training_clean_report.csv", clean_report)
-        print(f"[4/17] 训练集清洗 → training_clean.jsonl（保留 {len(clean_rows)}/{len([l for l in train.splitlines() if l])} 条）")
+        print(f"[4/4] 训练集清洗 → training_clean.jsonl（保留 {len(clean_rows)}/{len([l for l in train.splitlines() if l])} 条）")
     except Exception as e:
         errors.append(f"训练集清洗失败: {e}")
         print(f"[错误] 训练集清洗失败：{e}")
@@ -2359,14 +2403,14 @@ def main():
         draft_md, terms = faq_draft(entries, faq_min)
         (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
         write_csv(kb_dir / "faq_search_terms.csv", terms)
-        print(f"[4/17] FAQ 草稿 → faq_drafts.md（{len(terms)} 个话题，人工复核后入库）")
+        print(f"[5/5] FAQ 草稿 → faq_drafts.md（{len(terms)} 个话题，人工复核后入库）")
     except Exception as e:
         errors.append(f"FAQ 草稿失败: {e}")
         print(f"[错误] FAQ 草稿失败：{e}")
     if args.task == "kb-draft":
         print(f"\nkb-draft 完成：FAQ 草稿 → {kb_dir.resolve()}")
         return
-    print(f"[4/17] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
+    print(f"[6/6] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
     #    （results/unanswered 已在步骤 3 前计算）+ 证据化考核说明（P0-4）
@@ -2387,7 +2431,7 @@ def main():
     if not notes:
         notes = build_assessment_notes(msgs, results, unanswered, [])
     (run_dir / "assessment_notes.md").write_text(notes, encoding="utf-8")
-    print(f"[5/17] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
+    print(f"[7/7] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
 
     # 6. 群活跃度统计（P0-5：话唠榜/活跃时段/熬夜冠军，纯标准库）
     try:
@@ -2403,7 +2447,7 @@ def main():
             act_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | "
                           f"{r['active_days']} | {r['peak_hour']} | {r['night']} |")
         (run_dir / "activity.md").write_text("\n".join(act_md) + "\n", encoding="utf-8")
-        print(f"[6/17] 群活跃度统计 → {run_dir / 'activity.csv'}")
+        print(f"[8/8] 群活跃度统计 → {run_dir / 'activity.csv'}")
     except Exception as e:
         errors.append(f"活跃度统计失败: {e}")
         print(f"[错误] 活跃度统计失败：{e}")
@@ -2413,7 +2457,7 @@ def main():
         compact = compact_chat(msgs)
         if compact:
             (run_dir / "chat_compact.txt").write_text(compact + "\n", encoding="utf-8")
-        print(f"[7/17] 按时段压缩文本 → {run_dir / 'chat_compact.txt'}")
+        print(f"[9/9] 按时段压缩文本 → {run_dir / 'chat_compact.txt'}")
     except Exception as e:
         errors.append(f"压缩文本生成失败: {e}")
         print(f"[错误] 压缩文本生成失败：{e}")
@@ -2442,7 +2486,7 @@ def main():
                 lv_md.append(f"| {r['level']} | {r['topic']} | {r['count']} | {r['reason']} |")
             (run_dir / "insight.md").write_text(
                 (run_dir / "insight.md").read_text(encoding="utf-8") + "\n".join(lv_md) + "\n", encoding="utf-8")
-            print(f"[8/17] 问题分级 → insight_level.csv（P0×{sum(1 for r in lvl if r['level']=='P0')} P1×{sum(1 for r in lvl if r['level']=='P1')}）")
+            print(f"[10/10] 问题分级 → insight_level.csv（P0×{sum(1 for r in lvl if r['level']=='P0')} P1×{sum(1 for r in lvl if r['level']=='P1')}）")
         except Exception as e:
             errors.append(f"问题分级失败: {e}")
             print(f"[错误] 问题分级失败：{e}")
@@ -2454,7 +2498,7 @@ def main():
                 print(f"  [LLM 需求洞察失败，降级规则版] {e}")
         if ai_ins:
             (run_dir / "insight_llm.md").write_text("# 需求洞察（AI 提炼）\n\n" + ai_ins + "\n", encoding="utf-8")
-        print(f"[8/17] 需求洞察 → {run_dir / 'insight.md'}{' + insight_llm.md（AI）' if ai_ins else '（规则版）'}")
+        print(f"[11/11] 需求洞察 → {run_dir / 'insight.md'}{' + insight_llm.md（AI）' if ai_ins else '（规则版）'}")
     except Exception as e:
         errors.append(f"需求洞察失败: {e}")
         print(f"[错误] 需求洞察失败：{e}")
@@ -2473,7 +2517,7 @@ def main():
             sig_md.append(f"| {r['userid']} | {r['total']} | {r['success']} | {r['frustration']} | "
                           f"{r['workflow']} | {r['request']} | {rate}% | {r['confidence']} |")
         (run_dir / "signal.md").write_text("\n".join(sig_md) + "\n", encoding="utf-8")
-        print(f"[9/17] 客服质检信号 → {run_dir / 'signal.csv'}")
+        print(f"[12/12] 客服质检信号 → {run_dir / 'signal.csv'}")
     except Exception as e:
         errors.append(f"质检信号失败: {e}")
         print(f"[错误] 质检信号失败：{e}")
@@ -2487,7 +2531,7 @@ def main():
                         f"- 员工消息结构：问句 {bm['question_rate']}% / 陈述 {bm['statement_rate']}%"]
         (run_dir / "activity.md").write_text(
             (run_dir / "activity.md").read_text(encoding="utf-8") + "\n".join(act_md_extra) + "\n", encoding="utf-8")
-        print(f"[6/17] 沟通行为指标 → {run_dir / 'behavior.csv'}")
+        print(f"[13/13] 沟通行为指标 → {run_dir / 'behavior.csv'}")
     except Exception as e:
         errors.append(f"行为指标失败: {e}")
         print(f"[错误] 行为指标失败：{e}")
@@ -2503,7 +2547,7 @@ def main():
                                    "content": p["staff"]["content"][:200],
                                    "sent_at": p["staff"]["sent_at"].isoformat()}}
                         for p in pairs], ensure_ascii=False, indent=1), encoding="utf-8")
-        print(f"[9/17] 关键对话对 → {run_dir / 'dialogues.json'}（{len(pairs)} 组）")
+        print(f"[14/14] 关键对话对 → {run_dir / 'dialogues.json'}（{len(pairs)} 组）")
     except Exception as e:
         errors.append(f"关键对话提取失败: {e}")
         print(f"[错误] 关键对话提取失败：{e}")
@@ -2550,7 +2594,7 @@ def main():
         else:
             sop_md.append("（本期无 SOP 违规）")
         (run_dir / "sop_compliance.md").write_text("\n".join(sop_md) + "\n", encoding="utf-8")
-        print(f"[10/17] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv / funnel.csv / timeline.json")
+        print(f"[15/15] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv / funnel.csv / timeline.json")
     except Exception as e:
         errors.append(f"经营分析失败: {e}")
         print(f"[错误] 经营分析失败：{e}")
@@ -2563,7 +2607,7 @@ def main():
         # 多模态占位归档（P1-12）：[图片]/[语音] 等占位清单（待上游补全）
         media = media_manifest(args.input)
         write_csv(run_dir / "media_manifest.csv", media)
-        print(f"[11/17] 审计 → revoke_audit.csv / payment_ledger.csv（{len(ledger)} 条流水）/ media_manifest.csv（{len(media)} 条占位）")
+        print(f"[16/16] 审计 → revoke_audit.csv / payment_ledger.csv（{len(ledger)} 条流水）/ media_manifest.csv（{len(media)} 条占位）")
     except Exception as e:
         errors.append(f"审计失败: {e}")
         print(f"[错误] 审计失败：{e}")
@@ -2573,7 +2617,7 @@ def main():
         cfg12 = load_config()
         mem_dir = out / (cfg12.get("memory", {}).get("dir", "state") if isinstance(cfg12, dict) else "state")
         write_csv(run_dir / "commitment_review.csv", commitment_review(fups, mem_dir))
-        print(f"[12/17] 承诺到期复核 → commitment_review.csv")
+        print(f"[17/17] 承诺到期复核 → commitment_review.csv")
     except Exception as e:
         errors.append(f"承诺复核失败: {e}")
         print(f"[错误] 承诺复核失败：{e}")
@@ -2592,6 +2636,31 @@ def main():
             errors.append(f"检索失败: {e}")
             print(f"[错误] 检索失败：{e}")
 
+    # 19. @提及统计（第4轮吸收：被 @ 最多的关键对接人）
+    try:
+        ments = mentions_stats(msgs)
+        write_csv(run_dir / "mentions.csv", ments)
+        mn_md = ["# @提及统计（关键对接人识别）", "",
+                 "> 按群消息中被 @ 的次数排序，找出大家最依赖的对接口子；@所有人 单列。", "",
+                 "| 被@者 | 次数 | 提及人 | 最近提及 |", "|---|---|---|---|"]
+        for r in sorted(ments, key=lambda x: -x["count"])[:20]:
+            mn_md.append(f"| {r['userid']} | {r['count']} | {r['by_who']} | {r['last_time'][:16]} |")
+        (run_dir / "mentions.md").write_text("\n".join(mn_md) + "\n", encoding="utf-8")
+        print(f"[18/18] @提及统计 → {run_dir / 'mentions.csv'}（{len(ments)} 个被@对象）")
+    except Exception as e:
+        errors.append(f"@提及统计失败: {e}")
+        print(f"[错误] @提及统计失败：{e}")
+
+    # 20. 扁平消息表导出（第4轮吸收：messages.csv 供 Excel 透视）
+    try:
+        mrows = export_messages(msgs, mask=args.mask_all)
+        write_csv(run_dir / "messages.csv", mrows)
+        print(f"[19/19] 扁平消息表 → {run_dir / 'messages.csv'}（{len(mrows)} 条有效消息）")
+    except Exception as e:
+        errors.append(f"消息表导出失败: {e}")
+        print(f"[错误] 消息表导出失败：{e}")
+
+
     # 7. HTML 看板（汇总以上产物，纯本地离线渲染）
     try:
         _scripts_dir = Path(__file__).resolve().parent
@@ -2599,7 +2668,7 @@ def main():
             sys.path.insert(0, str(_scripts_dir))
         from render_html import render
         (run_dir / "report.html").write_text(render(run_dir), encoding="utf-8")
-        print(f"[13/18] HTML 报告 → {run_dir / 'report.html'}")
+        print(f"[20/20] HTML 报告 → {run_dir / 'report.html'}")
     except Exception as e:
         errors.append(f"HTML 报告生成失败: {e}")
         print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
@@ -2618,8 +2687,8 @@ def main():
             for old in snaps[:-keep]:
                 shutil.rmtree(old)
                 removed += 1
-            print(f"[14/18] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
-        print(f"[14/18] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
+            print(f"[21/21] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
+        print(f"[22/22] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
     except Exception as e:
         errors.append(f"结果目录清理失败: {e}")
         print(f"[错误] 结果目录清理失败：{e}")
@@ -2630,7 +2699,7 @@ def main():
         import shutil
         shutil.copy2(run_dir / "report.html", out / "latest_report.html")
         (out / "latest.txt").write_text(str((out / run_dir.name).resolve()) + "\n", encoding="utf-8")
-        print(f"[15/18] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
+        print(f"[23/23] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
         errors.append(f"最新入口更新失败: {e}")
         print(f"[错误] 最新入口更新失败：{e}")
@@ -2640,9 +2709,9 @@ def main():
         mem_cfg = load_config().get("memory", {}) if isinstance(load_config(), dict) else {}
         if mem_cfg.get("enabled", True):
             st = update_memory_layer(out / str(mem_cfg.get("dir", "state")), msgs, mask=not args.no_mask)
-            print(f"[16/18] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
+            print(f"[24/24] 记忆层已更新（群历史 {st['groups']}、画像 {st['profiles']}、新增事实 {st['memory_added']}）→ {out}/state/")
         else:
-            print("[16/18] 记忆层已按 config.json 关闭（memory.enabled=false）")
+            print("[25/25] 记忆层已按 config.json 关闭（memory.enabled=false）")
     except Exception as e:
         errors.append(f"记忆层更新失败: {e}")
         print(f"[错误] 记忆层更新失败：{e}")
@@ -2654,7 +2723,7 @@ def main():
             grow = build_growth_report(out / str(mem_cfg2.get("dir", "state")))
             if grow:
                 (out / "state" / "growth.md").write_text(grow + "\n", encoding="utf-8")
-                print("[17/18] 员工成长分析报告 → out/state/growth.md")
+                print("[26/26] 员工成长分析报告 → out/state/growth.md")
     except Exception as e:
         errors.append(f"成长报告生成失败: {e}")
         print(f"[错误] 成长报告生成失败：{e}")
@@ -2662,7 +2731,7 @@ def main():
     # 18. 周期环比报告（P1-16）：最近两期指标对比 + 新冒头话题（依赖历史时间戳目录 ≥2 期）
     try:
         (run_dir / "trend.md").write_text(trend_compare(out, run_dir), encoding="utf-8")
-        print(f"[18/18] 周期环比报告 → {run_dir / 'trend.md'}")
+        print(f"[27/27] 周期环比报告 → {run_dir / 'trend.md'}")
     except Exception as e:
         errors.append(f"周期环比失败: {e}")
         print(f"[错误] 周期环比失败：{e}")

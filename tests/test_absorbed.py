@@ -599,3 +599,38 @@ def test_round3_trend_compare(tmp_path):
     assert "| 员工消息 | 10 | 12 | ↑ +2 |" in md2
     assert "| 有效回复 | 8 | 11 | ↑ +3 |" in md2
     assert "全部完成" not in md2
+
+
+def test_round4_mentions():
+    """@提及统计（第4轮）：被 @ 者计数、@所有人、邮箱不误报。"""
+    msgs = [
+        {"msg_id": "m1", "group_id": "g", "group_name": "群", "sender": "张三", "is_staff": True,
+         "content": "@李四 明天跟进一下客户B的换货", "sent_at": datetime(2026, 9, 28, 11, 15)},
+        {"msg_id": "m2", "group_id": "g", "group_name": "群", "sender": "王五", "is_staff": True,
+         "content": "邮箱发我 hr.team@example.com", "sent_at": datetime(2026, 9, 28, 15, 2)},
+        {"msg_id": "m3", "group_id": "g", "group_name": "群", "sender": "赵六", "is_staff": True,
+         "content": "@李四 收到，我处理 @所有人 同步一下", "sent_at": datetime(2026, 9, 28, 16, 0)},
+    ]
+    rows = biz.mentions_stats(msgs)
+    d = {r["userid"]: r for r in rows}
+    assert d["李四"]["count"] == 2
+    assert set(d["李四"]["by_who"].split("、")) == {"张三", "赵六"}
+    assert d["所有人"]["count"] == 1
+    assert "example" not in d, "邮箱 @ 不应被识别为提及"
+
+
+def test_round4_export_messages():
+    """扁平消息表导出（第4轮）：字段完整、脱敏生效、话题标注。"""
+    msgs = [
+        {"msg_id": "m1", "group_id": "g", "group_name": "客户群", "sender": "客户A", "is_staff": False,
+         "content": "手机号13800138000 什么时候发货？", "sent_at": datetime(2026, 9, 28, 10, 0)},
+        {"msg_id": "m2", "group_id": "g", "group_name": "客户群", "sender": "员工1", "is_staff": True,
+         "content": "明天发货，单号已出", "sent_at": datetime(2026, 9, 28, 10, 1)},
+    ]
+    rows = biz.export_messages(msgs, mask=True)
+    assert len(rows) == 2
+    assert rows[0]["role"] == "客户" and rows[1]["role"] == "员工"
+    assert "13800138000" not in rows[0]["content"], "PII 应被掩码"
+    assert rows[0]["topic"] == "发货/物流"
+    assert rows[0]["sender"] != "客户A", "匿名化应替换发送人"
+    assert rows[1]["content"] == "明天发货，单号已出"

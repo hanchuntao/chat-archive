@@ -62,6 +62,8 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `insight_level.csv` | 客户痛点分级 P0-P3（P0 最优先解决） |
 | `trend.md` | 周期环比：本期 vs 上期关键指标 + 新冒头问题 |
 | `timeline.json` / `media_manifest.csv` | 客户会话时间线 / 图片语音等占位清单 |
+| `mentions.csv` | @提及统计：谁是被 @ 最多的关键对接人 |
+| `messages.csv` | 扁平消息表：时间/发送人/角色/话题/内容，Excel 直接透视 |
 | `assessment.md` | 绩效考核评分 |
 
 **第 5 步（可选）· 让结果更聪明**：在 `config.json` 的 `llm.api_key` 填你的 Key（DeepSeek 或任意 OpenAI 兼容服务），日报/要点/知识库自动走 AI 提炼。

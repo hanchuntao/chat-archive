@@ -697,6 +697,31 @@ def _render_funnel_level(fun_rows: list[dict], lv_rows: list[dict]) -> str:
     return "".join(html)
 
 
+def _render_mentions(ments: list[dict], msg_rows: list[dict]) -> str:
+    """@提及统计（第4轮）+ 扁平消息表预览（第4轮）。"""
+    html = []
+    if ments:
+        html.append('<table class="mini"><tr><th>被@者</th><th>次数</th><th>提及人</th><th>最近提及</th></tr>')
+        for r in sorted(ments, key=lambda x: -int(x.get("count") or 0))[:10]:
+            html.append(f'<tr><td><b>{escape(r.get("userid", ""))}</b></td><td>{escape(str(r.get("count", "")))}</td>'
+                        f'<td class="tiny">{escape(r.get("by_who", ""))}</td>'
+                        f'<td class="tiny">{escape(r.get("last_time", ""))[5:16].replace("T", " ")}</td></tr>')
+        html.append("</table>")
+    else:
+        html.append('<p class="tag">（本期无 @ 提及）</p>')
+    if msg_rows:
+        html.append('<div class="sub-block"><h4>消息明细（messages.csv 前 12 条 · 供 Excel 透视）</h4>')
+        html.append('<table class="mini"><tr><th>时间</th><th>发送人</th><th>角色</th><th>话题</th><th>内容</th></tr>')
+        for r in msg_rows[:12]:
+            html.append(f'<tr><td class="tiny">{escape(r.get("sent_at", ""))[5:16].replace("T", " ")}</td>'
+                        f'<td>{escape(r.get("sender", ""))}</td><td class="tiny">{escape(r.get("role", ""))}</td>'
+                        f'<td class="tiny">{escape(r.get("topic", ""))}</td>'
+                        f'<td class="tiny">{escape((r.get("content") or "")[:40])}</td></tr>')
+        html.append('</table><p class="tiny">完整字段：sent_at / group / sender / role / topic / content</p>')
+        html.append("</div>")
+    return "".join(html)
+
+
 def _render_timeline(timeline: list[dict], media_rows: list[dict], trend_md: str) -> str:
     """客户会话时间线（第3轮吸收 11）+ 媒体占位归档（12）+ 周期环比（16）。"""
     html = []
@@ -771,6 +796,8 @@ def render(out_dir: Path, title: str = "") -> str:
         except Exception:
             timeline = []
     media_rows = _read_csv(out_dir / "media_manifest.csv")
+    mentions = _read_csv(out_dir / "mentions.csv")
+    msg_rows = _read_csv(out_dir / "messages.csv")
     trend_md = ""
     trp = out_dir / "trend.md"
     if trp.exists():
@@ -819,6 +846,7 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("14", "SOP 合规与审计", _render_sop_audit(sop_rows, ledger, revokes), "动作窗 · 资金流水 · 撤回"),
         _section("15", "销售漏斗与问题分级", _render_funnel_level(funnel, lv_rows), "咨询→成交卡点 · P0-P3 处理优先级"),
         _section("16", "会话时间线与媒体归档", _render_timeline(timeline, media_rows, trend_md), "客户交互轨迹 · 多模态占位 · 周期环比"),
+        _section("17", "@提及与消息明细", _render_mentions(mentions, msg_rows), "关键对接人识别 · 扁平表透视"),
     ])
 
     return f"""<!DOCTYPE html>
