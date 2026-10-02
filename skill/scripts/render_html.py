@@ -226,9 +226,12 @@ def _render_daily(days: list[dict]) -> str:
     for d in days:
         html.append(f"<details><summary>{escape(d['name'])} · {escape(d['date'])}</summary>")
         html.append('<div class="day-sec">实际工作内容</div><ul class="day-rows">')
-        for it in d["items"]:
-            if it["sec"] and "实际" in it["sec"]:
+        work = [it for it in d["items"] if it["sec"] and "实际" in it["sec"]]
+        if work:
+            for it in work:
                 html.append(f"<li><span class='day-time'>{it['t']}</span>{escape(it['c'])}</li>")
+        else:
+            html.append('<li class="day-empty">（今日无实质工作内容消息）</li>')
         html.append("</ul>")
         hits = [it for it in d["items"] if it["sec"] and "规范" in it["sec"]]
         if hits:

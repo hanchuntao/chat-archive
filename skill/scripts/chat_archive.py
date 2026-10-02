@@ -913,7 +913,14 @@ def main():
     # 2. 工作日报
     day_dir = run_dir / "daily_reports"
     day_dir.mkdir(exist_ok=True)
-    target = args.date or datetime.now().strftime("%Y-%m-%d")
+    if args.date:
+        target = args.date
+    else:
+        today = datetime.now().strftime("%Y-%m-%d")
+        last_day = max((m["sent_at"] for m in msgs), default=datetime.now()).strftime("%Y-%m-%d")
+        target = last_day if last_day != today else today
+        if last_day != today:
+            print(f"[提示] 今天（{today}）无群消息，日报默认取消息最后一天 {last_day}；可用 --date 指定其他日期")
     users = [args.user] if args.user else sorted({m["sender"] for m in msgs if m["is_staff"]})
     for u in users:
         if use_llm:

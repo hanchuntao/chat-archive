@@ -21,6 +21,8 @@ python3 /Users/chhan/work/chat-archive/skill/scripts/chat_archive.py all \
 
 跑完后浏览器打开 `/tmp/ca_demo/report.html` 看效果——六类产物齐全（含知识库）。
 员工名单一个参数三种写法：**`--staff all`**（全部发送人视为员工，员工群最常用）；`--staff "张三,李四"`（只统计/日报/考核这几个员工）；`--staff 名单.txt`（名单放文件，每行一个）。
+
+> **日报日期**：不指定 `--date` 时，若今天无群消息则自动取「消息最后一天」（导入历史记录也能出内容），并打印提示。
 （`sample_data/sample_chat.json` 是安全内推群样例，不含电商话题，跑出来知识库为空属正常；`ecom_chat.txt` 是电商客服群样例，知识库有内容。）
 
 **第 2 步 · 换成你自己的群记录**（只需改 1 个文件；**默认已填好样例配置，拿到即可直接跑第 3 步**）：
