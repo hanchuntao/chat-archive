@@ -610,10 +610,44 @@ DEFAULT_RULES = [
 
 
 def load_rules(rules_file: str) -> list[dict]:
-    if not rules_file:
-        return DEFAULT_RULES
-    data = json.loads(Path(rules_file).read_text(encoding="utf-8"))
-    return [{"name": r["name"], "pattern": r["pattern"], "level": r.get("level", "medium")} for r in data]
+    """合规规则优先级：--rules-file 命令行 > config.json assessment.rules > 内置默认。"""
+    if rules_file:
+        data = json.loads(Path(rules_file).read_text(encoding="utf-8"))
+        return [{"name": r["name"], "pattern": r["pattern"], "level": r.get("level", "medium")} for r in data]
+    cfg = load_config()
+    a = cfg.get("assessment") if isinstance(cfg, dict) else None
+    if isinstance(a, dict) and isinstance(a.get("rules"), list) and a["rules"]:
+        return [{"name": r["name"], "pattern": r["pattern"], "level": r.get("level", "medium")}
+                for r in a["rules"] if isinstance(r, dict) and r.get("name") and r.get("pattern")]
+    return DEFAULT_RULES
+
+
+DEFAULT_SCHEME = {"base_score": 100, "timeout_penalty": 5, "violation_penalty": 10,
+                  "filler_threshold": 50, "filler_penalty": 5, "bonus": 1, "bonus_cap": 20,
+                  "timeout_sec": 300}
+
+
+def load_scheme(scheme_arg: str = "", duty_arg: str = "") -> dict:
+    """考核方案：config.json assessment 段为默认，--scheme/--duty 命令行临时覆盖。"""
+    scheme = dict(DEFAULT_SCHEME)
+    cfg = load_config()
+    a = cfg.get("assessment") if isinstance(cfg, dict) else None
+    if isinstance(a, dict):
+        for k in DEFAULT_SCHEME:
+            if k in a and isinstance(a[k], (int, float)):
+                scheme[k] = int(a[k])
+    if scheme_arg:
+        for kv in scheme_arg.split(","):
+            k, _, v = kv.partition(":")
+            if k in scheme and v.strip().lstrip("-").isdigit():
+                scheme[k] = int(v.strip())
+    scheme["duty"] = {}
+    if duty_arg:
+        for kv in duty_arg.split(","):
+            g, _, s = kv.partition(":")
+            if g and s:
+                scheme["duty"][g.strip()] = s.strip()
+    return scheme
 
 
 def detect_violations(content: str, rules: list[dict] | None = None) -> list[dict]:
@@ -936,21 +970,8 @@ def main():
     (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
     print(f"[4/5] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
 
-    # 5. 绩效考核
-    scheme = {"base_score": 100, "timeout_penalty": 5, "violation_penalty": 10,
-              "filler_threshold": 50, "filler_penalty": 5, "bonus": 1, "bonus_cap": 20}
-    if args.scheme:
-        for kv in args.scheme.split(","):
-            k, _, v = kv.partition(":")
-            if k in scheme and v.strip().lstrip("-").isdigit():
-                scheme[k] = int(v.strip())
-    scheme["timeout_sec"] = 300
-    scheme["duty"] = {}
-    if args.duty:
-        for kv in args.duty.split(","):
-            g, _, s = kv.partition(":")
-            if g and s:
-                scheme["duty"][g.strip()] = s.strip()
+    # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
+    scheme = load_scheme(args.scheme, args.duty)
     results = run_assessment(msgs, rules, scheme)
     write_csv(run_dir / "assessment.csv", results)
     as_md = ["# 绩效考核（AI 监督）", "", f"- 基准分 {scheme['base_score']}；超时 -{scheme['timeout_penalty']}/次；违规 -{scheme['violation_penalty']}/次；口水率>{scheme['filler_threshold']}% -{scheme['filler_penalty']}；有效回复 +{scheme['bonus']}/条（封顶+{scheme['bonus_cap']}）", "",
@@ -962,6 +983,7 @@ def main():
     print(f"[5/5] 绩效考核 → {run_dir / 'assessment.csv'}")
 
     # 6. HTML 看板（汇总以上产物，纯本地离线渲染）
+    errors: list[str] = []
     try:
         _scripts_dir = Path(__file__).resolve().parent
         if str(_scripts_dir) not in sys.path:
@@ -970,7 +992,8 @@ def main():
         (run_dir / "report.html").write_text(render(run_dir), encoding="utf-8")
         print(f"[6/6] HTML 报告 → {run_dir / 'report.html'}")
     except Exception as e:
-        print(f"[提示] HTML 报告生成失败（不影响其余产物）：{e}")
+        errors.append(f"HTML 报告生成失败: {e}")
+        print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
 
     # 7. 快照保留策略：out/ 下每个 <日期_时间>/ 目录就是一次运行的完整结果；
     #    只保留最近 N 份（config.json snapshot.keep，默认 30，0=不清理），防止长期运行磁盘膨胀
@@ -989,7 +1012,8 @@ def main():
             print(f"[7/7] 已清理 {removed} 份过期结果目录，保留最近 {keep} 份")
         print(f"[7/7] 本次结果目录 → {run_dir}/（每次运行一份，共 {len(snaps)} 份在库）")
     except Exception as e:
-        print(f"[提示] 结果目录清理失败（不影响其余产物）：{e}")
+        errors.append(f"结果目录清理失败: {e}")
+        print(f"[错误] 结果目录清理失败：{e}")
 
     # 8. 最新结果固定入口：<out>/latest_report.html 永远指向最新看板（可收藏/定时刷新），
     #    <out>/latest.txt 记录最新结果目录名；不复制整份产物，只给固定入口
@@ -999,8 +1023,12 @@ def main():
         (out / "latest.txt").write_text(run_dir.name + "\n", encoding="utf-8")
         print(f"[8/8] 最新入口 → {out / 'latest_report.html'}（固定路径，浏览器可收藏）")
     except Exception as e:
-        print(f"[提示] 最新入口更新失败（不影响其余产物）：{e}")
+        errors.append(f"最新入口更新失败: {e}")
+        print(f"[错误] 最新入口更新失败：{e}")
 
+    if errors:
+        print("\n[错误] 本次运行存在失败项（见上），退出码 1：", *errors, sep="\n  - ")
+        sys.exit(1)
     print(f"\n全部完成。本次结果：{run_dir.resolve()}")
 
 

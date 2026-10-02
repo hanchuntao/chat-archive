@@ -359,6 +359,7 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 - `snapshot.keep`：`out/` 下保留最近 N 份结果目录（每次运行一份），超出自动清理；`0` = 永久保留。运行时可用 `--keep-snapshots N` 临时覆盖。
 - `topics`：**知识库话题规则**，换成你的行业关键词（如安全/IT：漏洞、CVE、内推、面试…），改这里不用改代码；不配置时用内置电商话题
 - `latest`：每次运行后自动更新 `out/latest_report.html`（最新看板固定入口）+ `out/latest.txt`（最新结果目录名），路径固定可收藏
+- `assessment`：**考核方案与合规规则**（基准分/超时扣分/违规扣分/口水阈值/加分等 + `rules` 违规话术清单），改这里即改考核制度；命令行 `--scheme`/`--rules-file` 可临时覆盖，优先级更高
 - `knowledge.local.dir`：本地知识库目录，**可填 Obsidian vault 路径等任意绝对路径**（见下节）。
 - `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成。
 

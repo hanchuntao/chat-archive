@@ -111,25 +111,29 @@ def _ima_post(path: str, body: dict, client_id: str, api_key: str) -> dict:
     return data
 
 
-def _find_knowledge_base(client_id: str, api_key: str, name: str) -> str | None:
-    """按名称定位知识库 ID；名称为空时优先可添加库，列出供选择。"""
+def _find_knowledge_base(client_id: str, api_key: str, name: str) -> tuple[str | None, str | None]:
+    """按名称定位知识库 ID；返回 (kb_id 或 None, 错误信息或 None)。认证/API 错误明确报出。"""
     if name:
         resp = _ima_post("/search_knowledge_base",
                          {"query": name, "cursor": "", "limit": 20}, client_id, api_key)
-        if resp.get("code") == 0:
-            for kb in resp.get("data", {}).get("info_list", []):
-                if kb.get("name") == name:
-                    return kb["id"]
+        if resp.get("code") != 0:
+            return None, (f"ima API 错误（code={resp.get('code')}）：{resp.get('msg')}"
+                          "（检查 API Key / Client ID 是否有效，生成页 https://ima.qq.com/agent-interface）")
+        for kb in resp.get("data", {}).get("info_list", []):
+            if kb.get("name") == name:
+                return kb["id"], None
     resp = _ima_post("/get_addable_knowledge_base_list",
                      {"cursor": "", "limit": 50}, client_id, api_key)
-    if resp.get("code") == 0:
-        lst = resp.get("data", {}).get("addable_knowledge_base_list", [])
-        if lst and not name:
-            print("可添加的知识库：")
-            for kb in lst:
-                print(f"  - {kb.get('name')} (id={kb.get('id')})")
-            print('请在 config.json 的 knowledge.ima.knowledge_base_name 中指定其一。')
-    return None
+    if resp.get("code") != 0:
+        return None, (f"ima API 错误（code={resp.get('code')}）：{resp.get('msg')}"
+                      "（检查 API Key / Client ID 是否有效，生成页 https://ima.qq.com/agent-interface）")
+    lst = resp.get("data", {}).get("addable_knowledge_base_list", [])
+    if lst and not name:
+        print("可添加的知识库：")
+        for kb in lst:
+            print(f"  - {kb.get('name')} (id={kb.get('id')})")
+        print('请在 config.json 的 knowledge.ima.knowledge_base_name 中指定其一。')
+    return None, None
 
 
 def _cos_sign(secret_key: str, cos_key: str, host: str, key_time: str) -> str:
@@ -202,9 +206,11 @@ def sync_ima(out: Path, cfg: dict) -> str:
     if not src.exists():
         return "ima：out/knowledge/ 不存在，跳过"
     kb_name = (ima.get("knowledge_base_name") or "").strip()
-    kb_id = _find_knowledge_base(client_id, api_key, kb_name)
+    kb_id, err = _find_knowledge_base(client_id, api_key, kb_name)
+    if err:
+        raise RuntimeError(err)
     if not kb_id:
-        return "ima：未能定位知识库（检查 knowledge_base_name，或按上方列表填写）"
+        raise RuntimeError("ima：未能定位知识库（检查 knowledge_base_name，或按上方列表填写）")
     files = sorted(src.glob("*.md"))
     ok, fail = 0, []
     for f in files:
@@ -234,7 +240,11 @@ def main():
     if args.to in ("local", "all"):
         msgs.append(sync_local(out, cfg))
     if args.to in ("ima", "all"):
-        msgs.append(sync_ima(out, cfg))
+        try:
+            msgs.append(sync_ima(out, cfg))
+        except RuntimeError as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            sys.exit(1)
     for m in msgs:
         print(m)
 

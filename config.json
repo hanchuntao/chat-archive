@@ -112,5 +112,48 @@
       "什么时候"
     ],
     "comment": "知识库话题规则：换成你的行业关键词即可（如安全/IT：漏洞、CVE、内推、面试…），改这里不用改代码"
+  },
+  "assessment": {
+    "base_score": 100,
+    "timeout_penalty": 5,
+    "violation_penalty": 10,
+    "filler_threshold": 50,
+    "filler_penalty": 5,
+    "bonus": 1,
+    "bonus_cap": 20,
+    "timeout_sec": 300,
+    "rules": [
+      {
+        "name": "私域导流",
+        "pattern": "加我微信|加V|加v|扫码加我|私聊我微信",
+        "level": "high"
+      },
+      {
+        "name": "私下返现",
+        "pattern": "私下返现|返现到账|红包返现",
+        "level": "high"
+      },
+      {
+        "name": "绝对化话术",
+        "pattern": "最低价|全网最低|最好|第一品牌|顶级",
+        "level": "medium"
+      },
+      {
+        "name": "内部底价",
+        "pattern": "内部价|员工价|成本价告诉你",
+        "level": "high"
+      },
+      {
+        "name": "夸大承诺",
+        "pattern": "保证|绝对|百分之百|必退",
+        "level": "medium"
+      },
+      {
+        "name": "辱骂客户",
+        "pattern": "傻|蠢|滚|有病",
+        "level": "high"
+      }
+    ],
+    "comment": "考核方案与合规规则：改这里即改考核制度（命令行 --scheme/--rules-file 可临时覆盖，优先级更高）"
   }
 }

@@ -138,3 +138,46 @@ def test_full_run_keep_snapshots_cleanup(tmp_path):
     stamp = [d for d in out.iterdir() if d.is_dir() and re.match(r"^\d{4}-\d{2}-\d{2}_\d{6}_\d{6}$", d.name)]
     assert len(stamp) == 1, "keep=1 应只保留最近一份"
     assert (out / "latest_report.html").exists()
+
+
+# ---- ④ 考核方案进 config / ⑦ 非零退出码 / ⑧ weekly / ⑨ ima 错误路径 ----
+
+def test_load_scheme_from_config(monkeypatch):
+    monkeypatch.setattr(biz, "load_config",
+                        lambda: {"assessment": {"base_score": 90, "timeout_penalty": 8,
+                                                "filler_threshold": 40, "bonus": 2}})
+    s = biz.load_scheme()
+    assert s["base_score"] == 90 and s["timeout_penalty"] == 8
+    assert s["filler_threshold"] == 40 and s["bonus"] == 2
+    # 命令行覆盖 config
+    s2 = biz.load_scheme("base_score:80,bonus_cap:10")
+    assert s2["base_score"] == 80 and s2["bonus_cap"] == 10
+
+
+def test_load_rules_from_config(monkeypatch):
+    monkeypatch.setattr(biz, "load_config",
+                        lambda: {"assessment": {"rules": [{"name": "测试规则", "pattern": "测试", "level": "high"}]}})
+    rules = biz.load_rules("")
+    assert rules == [{"name": "测试规则", "pattern": "测试", "level": "high"}]
+
+
+def test_weekly_subcommand_exists():
+    r = subprocess.run([sys.executable, str(REPO / "chat-archive.py"), "--help"],
+                       capture_output=True, text=True, timeout=30)
+    assert "weekly" in r.stdout and "report" in r.stdout
+
+
+def test_kb_sync_fake_key_exits_nonzero(tmp_path):
+    import json
+    cfg = {"knowledge": {"ima": {"enabled": True, "api_key": "sk-fake",
+                                 "client_id": "fake", "knowledge_base_name": "x", "folder": ""}}}
+    cfg_p = tmp_path / "cfg.json"
+    cfg_p.write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "out"
+    (out / "knowledge").mkdir(parents=True)
+    (out / "knowledge" / "a.md").write_text("# a\n", encoding="utf-8")
+    r = subprocess.run([sys.executable, str(REPO / "skill" / "scripts" / "sync_kb.py"),
+                        "--out", str(out), "--to", "ima", "--config", str(cfg_p)],
+                       capture_output=True, text=True, timeout=40)
+    assert r.returncode == 1, "ima 认证失败应非零退出"
+    assert "ima API 错误" in r.stderr
