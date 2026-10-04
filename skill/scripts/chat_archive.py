@@ -1687,6 +1687,10 @@ def notify_webhook(events: list[dict], wh: dict) -> str:
     url = wh["url"]
     secret = wh.get("secret") or ""
     wtype = (wh.get("type") or "generic").lower()
+    is_local = url.startswith(("http://127.", "http://localhost", "http://[::1]"))
+    _opener = _ur.build_opener(
+        _ur.ProxyHandler({}) if is_local else _ur.ProxyHandler()
+    )
     title = f"chat-archive 丢单/商机告警（{len(events)} 条）"
     lines = []
     for e in events[:20]:
@@ -1707,7 +1711,7 @@ def notify_webhook(events: list[dict], wh: dict) -> str:
     try:
         req = _ur.Request(url, data=_j.dumps(payload, ensure_ascii=False).encode("utf-8"),
                           headers={"Content-Type": "application/json"})
-        resp = _ur.urlopen(req, timeout=10)
+        resp = _opener.open(req, timeout=10)
         return f"Webhook 已推送 {len(events)} 条事件（HTTP {resp.status}）"
     except Exception as e:
         return f"Webhook 推送失败：{e}"
