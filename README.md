@@ -251,8 +251,6 @@ python3 skill/scripts/convert_wx.py --input 群记录.txt  --output 标准.json 
 | `backup <文件>` | SQLite online backup（热备，可增量备份到任意路径） |
 | `--version`（全局） | 打印版本号后退出 |
 
-所有命令支持 `--json` 输出，便于 skill / 脚本调用。
-
 业务层子命令（`skill/scripts/chat_archive.py`）：`all`（全流程）/ `stats` / `daily` / `summary` / `kb` / `assess` / `convert` / `kb-sync` / `kb-draft` / `verify`（快照完整性校验：`verify --input <结果目录>`，SHA256 比对篡改/缺失/多余，ok 退出 0 否则 1）/ `monthly`（多群汇总月报 + 员工排名）/ `mcp`（MCP JSON-RPC + REST API）/ `pair --user "A,B"`（双人对话报告）/ `watch`（守护监控：轮询输入目录，文件变化自动重跑）。
 
 常用参数：
@@ -318,6 +316,8 @@ duty 配置（`config.json` 的 `assessment` 段，`*` 为通配键）：
 - 命中掩码的消息在库中标记 `masked=1`，`import --audit` 可输出审计明细
 - 规则可编程扩展（`pipeline/desensitize.py` 的 `DEFAULT_RULES`）
 - **顺序固定：清洗 → 脱敏 → 入库**，库中只存干净数据
+
+> **密钥安全**：`config.json` 会被 git 跟踪——**不要把真实 `llm.api_key` 写进 config.json 并提交**。优先用环境变量 `CHAT_ARCHIVE_LLM_API_KEY` 覆盖（见下）；本地覆盖配置放 `config.local.json`（已被 .gitignore 忽略）。
 
 ## LLM 提炼（可选）
 

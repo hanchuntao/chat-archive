@@ -34,6 +34,8 @@ import subprocess
 import sys
 from collections import OrderedDict
 from datetime import datetime, timedelta
+
+__version__ = "2.0.0"  # 生产就绪：业务 CLI 版本号（与 version.json 输出格式适配表一致）
 from pathlib import Path
 
 # ---- 复用 chat-archive CLI 数据管道（脱敏规则引擎），保证 PII 规则全局唯一 ----
@@ -168,8 +170,10 @@ def load_config() -> dict:
             raw = json.loads(cfg_path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 data = raw
+            else:
+                print(f"[警告] config.json 顶层不是对象，已用默认配置", file=sys.stderr)
         except Exception:
-            pass
+            print(f"[警告] config.json 解析失败，已用默认配置（路径：{cfg_path}）", file=sys.stderr)
     _CONFIG_CACHE, _CONFIG_CACHE_SIG = data, sig
     return data
 
@@ -2823,6 +2827,16 @@ def filter_active_window(msgs: list[dict], days: int = 0) -> list[dict]:
     return [m for m in msgs if isinstance(m["sent_at"], datetime) and m["sent_at"] >= cutoff]
 
 
+def _csv_cell_safe(v):
+    """CSV 公式注入防护（OWASP）：以 = + @ 开头、或 - 后接非数字的字符串加 ' 前缀，
+    防止 Excel/WPS 把群消息内容当公式执行（如 '=cmd|...' 类载荷）。"""
+    if isinstance(v, str) and v:
+        c0 = v[0]
+        if c0 in ("=", "+", "@") or (c0 == "-" and not v[1:2].isdigit()):
+            return "'" + v
+    return v
+
+
 def write_csv(path: Path, rows: list[dict]):
     if not rows:
         path.write_text("(无数据)\n", encoding="utf-8")
@@ -2836,6 +2850,8 @@ def write_csv(path: Path, rows: list[dict]):
             for k, v in wr.items():
                 if isinstance(v, (dict, list)):
                     wr[k] = json.dumps(v, ensure_ascii=False)
+                elif isinstance(v, str):
+                    wr[k] = _csv_cell_safe(v)
             w.writerow(wr)
 
 
@@ -3041,6 +3057,7 @@ def main():
     ap.add_argument("--keep-snapshots", type=int, default=None, help="archive/ 保留最近 N 份快照（覆盖 config.json，0=不清理）")
     ap.add_argument("--active-days", type=int, default=0, help="活跃窗口：仅处理最近 N 天消息（0=全部，P2-3）")
     ap.add_argument("--interval", type=int, default=60, help="watch：轮询间隔秒数（默认 60，P2-7）")
+    ap.add_argument("--version", action="version", version=f"chat-archive {__version__}")
     ap.add_argument("--kb-config", default="", help="kb-sync 时指定 config.json 路径（默认仓库根 config.json）")
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
@@ -3102,7 +3119,12 @@ def main():
 
     if args.task == "mcp":
         from chat_archive.mcp_server import serve
-        srv = serve(args.db or None, port=args.port)
+        try:
+            srv = serve(args.db or None, port=args.port)
+        except OSError as e:
+            print(f"[错误] 端口 {args.port} 不可用（可能已被占用）：{e}", file=sys.stderr)
+            print("[提示] 换端口重试：--port 9000", file=sys.stderr)
+            sys.exit(1)
         print(f"[MCP] chat-archive MCP Server 已启动：http://127.0.0.1:{args.port}/（Ctrl+C 退出）")
         try:
             srv.serve_forever()
