@@ -15,37 +15,69 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS chats (
-    chat_id    TEXT PRIMARY KEY,
-    name       TEXT,
-    first_time TEXT,
-    last_time  TEXT,
-    msg_count  INTEGER DEFAULT 0
-);
+SCHEMA_VERSION = 1
 
-CREATE TABLE IF NOT EXISTS messages (
-    msg_id    TEXT PRIMARY KEY,
-    chat_id   TEXT NOT NULL,
-    sender    TEXT,
-    time      TEXT,
-    content   TEXT,
-    type      TEXT DEFAULT 'text',
-    category  TEXT,
-    tags      TEXT,
-    raw_hash  TEXT,
-    masked    INTEGER DEFAULT 0,
-    created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_messages_time   ON messages(time);
-CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);
-CREATE INDEX IF NOT EXISTS idx_messages_type   ON messages(type);
+# 版本化迁移：MIGRATIONS[n] = 从 n-1 → n 的 SQL 语句列表。
+# 未来 schema 变更（加列/建表）在此追加新版本并写对应迁移，旧库自动升级。
+MIGRATIONS: dict[int, list[str]] = {
+    1: [
+        """
+        CREATE TABLE IF NOT EXISTS chats (
+            chat_id    TEXT PRIMARY KEY,
+            name       TEXT,
+            first_time TEXT,
+            last_time  TEXT,
+            msg_count  INTEGER DEFAULT 0
+        );
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            msg_id    TEXT PRIMARY KEY,
+            chat_id   TEXT NOT NULL,
+            sender    TEXT,
+            time      TEXT,
+            content   TEXT,
+            type      TEXT DEFAULT 'text',
+            category  TEXT,
+            tags      TEXT,
+            raw_hash  TEXT,
+            masked    INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        """,
+        "CREATE INDEX IF NOT EXISTS idx_messages_time   ON messages(time);",
+        "CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);",
+        "CREATE INDEX IF NOT EXISTS idx_messages_type   ON messages(type);",
+        """
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content, sender,
+            content='messages', content_rowid='rowid'
+        );
+        """,
+    ],
+}
 
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content, sender,
-    content='messages', content_rowid='rowid'
-);
-"""
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """按 PRAGMA user_version 逐级迁移到 SCHEMA_VERSION（事务内，失败回滚）。"""
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"数据库 schema 版本 {version} 高于程序支持的 {SCHEMA_VERSION}："
+            "请先升级程序再使用该数据库。"
+        )
+    while version < SCHEMA_VERSION:
+        version += 1
+        stmts = MIGRATIONS.get(version)
+        if stmts is None:
+            raise RuntimeError(f"缺少 schema v{version} 的迁移定义，无法升级。")
+        with conn:  # 事务：任一语句失败整体回滚，user_version 不回退
+            for sql in stmts:
+                conn.execute(sql)
+            conn.execute(f"PRAGMA user_version = {version}")
+
+
+SCHEMA = MIGRATIONS[SCHEMA_VERSION]
 
 
 class Database:
@@ -74,7 +106,7 @@ class Database:
                 ) from e
 
     def init(self) -> None:
-        self.conn.executescript(SCHEMA)
+        migrate(self.conn)
         self.conn.commit()
 
     # ---- 写入 ----
