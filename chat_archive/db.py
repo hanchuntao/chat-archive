@@ -83,7 +83,7 @@ SCHEMA = MIGRATIONS[SCHEMA_VERSION]
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.conn = sqlite3.connect(str(self.path))
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)  # MCP/并发场景（WAL+busy_timeout 已加固）
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
