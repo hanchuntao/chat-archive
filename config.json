@@ -252,5 +252,48 @@
       "to": ""
     },
     "comment": "P0-4 主动触达：丢单/商机/待跟进事件推送。type=generic|dingtalk|wecom；钉钉/企微带 secret 时自动加签；email 用 smtplib 发 HTML 摘要"
+  },
+  "industry": {
+    "name": "ecommerce",
+    "packages": {
+      "ecommerce": {
+        "keywords": [
+          "竞品",
+          "比价",
+          "投诉",
+          "退款",
+          "差评",
+          "假货",
+          "发票",
+          "物流",
+          "发货",
+          "客服",
+          "优惠券",
+          "售后"
+        ],
+        "level": "medium"
+      },
+      "education": {
+        "keywords": [
+          "续费",
+          "退费",
+          "投诉",
+          "课时",
+          "家长",
+          "报名"
+        ],
+        "level": "medium"
+      },
+      "healthcare": {
+        "keywords": [
+          "投诉",
+          "医保",
+          "报销",
+          "事故",
+          "不良反应"
+        ],
+        "level": "high"
+      }
+    }
   }
 }

@@ -124,10 +124,40 @@ class _Handler(BaseHTTPRequestHandler):
         self._reply(handle(req, self.db))
 
     def do_GET(self):
-        # SSE 流式端点：兼容 Streamable HTTP 客户端握手（简化实现，单条消息）
+        # P2-9 REST 简化 API（GET 路由）；非 API 路径走 SSE 握手（兼容 Streamable HTTP 客户端）
+        from urllib.parse import parse_qs, urlparse
+        u = urlparse(self.path)
+        if u.path in ("/api/health", "/healthz"):
+            self._reply({"ok": True, "service": SERVER_NAME, "version": SERVER_VERSION})
+            return
+        if u.path in ("/api/stats", "/api/search", "/api/keywords"):
+            qs = parse_qs(u.query)
+            if u.path == "/api/stats":
+                req = {"jsonrpc": "2.0", "method": "tools/call",
+                       "params": {"name": "stats", "arguments": {}}, "id": 1}
+            elif u.path == "/api/search":
+                req = {"jsonrpc": "2.0", "method": "tools/call",
+                       "params": {"name": "search", "arguments": {
+                           "query": (qs.get("q") or [""])[0],
+                           "limit": int((qs.get("limit") or ["20"])[0])}}, "id": 1}
+            else:
+                req = {"jsonrpc": "2.0", "method": "tools/call",
+                       "params": {"name": "keyword_frequency", "arguments": {
+                           "top": int((qs.get("top") or ["30"])[0])}}, "id": 1}
+            resp = handle(req, self.db)
+            inner = (resp.get("result") or {}).get("content") or []
+            text = inner[0].get("text", "") if inner else ""
+            if text:
+                try:
+                    self._reply(json.loads(text))  # REST 直接返回数据对象
+                    return
+                except (ValueError, TypeError):
+                    pass
+            self._reply(resp)
+            return
         body = (b'data: ' + json.dumps({
             "jsonrpc": "2.0", "method": "notifications/message",
-            "params": {"message": "chat-archive MCP server ready (POST JSON-RPC)"},
+            "params": {"message": "chat-archive MCP server ready (POST JSON-RPC / GET /api/* REST)"},
         }, ensure_ascii=False).encode("utf-8") + b'\n\n')
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")

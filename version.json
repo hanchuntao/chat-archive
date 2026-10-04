@@ -1,0 +1,47 @@
+{
+  "_comment": "chat-archive 导出/输入格式适配表（P2-10）。只消费明文输入，不碰内存取 key / 数据库解密。",
+  "version": "1.0.0",
+  "input_formats": [
+    {
+      "format": "wechat-cli json",
+      "tool": "wechat-cli (jackwener/wx-cli 系)",
+      "command": "wechat-cli history \"群名\" --start-time \"YYYY-MM-DD\" --format json --limit 20000",
+      "fields": ["senderDisplayName", "senderName", "content", "createTime", "msgType", "type", "source"],
+      "notes": "输出重定向到文件后作为本项目 --input 使用"
+    },
+    {
+      "format": "weflow / 微信聊天导出",
+      "tool": "WeFlow 及同类导出工具",
+      "fields": ["sender", "content", "time", "type"],
+      "notes": "TXT/MD/JSON/CSV 均支持"
+    },
+    {
+      "format": "wecom (企业微信) 导出",
+      "tool": "企业微信后台导出",
+      "fields": ["sender_name", "content", "create_time", "msg_type"],
+      "notes": "仅明文导出文件；与微信导出同管线处理"
+    },
+    {
+      "format": "自定义 JSON/CSV/TXT",
+      "tool": "任意",
+      "fields": ["sender/sender_name/senderDisplayName", "content", "time/sent_at/createTime", "type"],
+      "notes": "导入器自动探测字段别名（见 chat_archive/importers/）"
+    }
+  ],
+  "output_formats": [
+    {"format": "csv", "note": "默认结构化产物（统计/考核/信号/画像等）"},
+    {"format": "yml", "note": "P2-1 CSV 产物的 YAML 伴生版（零依赖序列化）"},
+    {"format": "jsonl", "note": "P2-2 ChatLab 标准导出 chatlab_export.jsonl；knowledge/training.jsonl 供 AI 训练"},
+    {"format": "md", "note": "日报/讨论要点/知识条目/入职手册"},
+    {"format": "html", "note": "report.html 交互看板 + pair_report.html + monthly_report.html"}
+  ],
+  "db_schema_versions": [
+    {"version": 1, "note": "初版：messages + chats + FTS5"},
+    {"version": 2, "note": "P1-4：messages.recalled 列（防撤回位），旧库自动迁移"}
+  ],
+  "known_limits": [
+    "FTS5 默认分词器对中文按连续字符成 token，中文检索走 LIKE 兜底（见 docs/vector.md）",
+    "BM25 排序对英文/数字 token 生效；中文召回以子串匹配为准",
+    "本项目不内置任何微信/企微解密能力——输入必须为明文导出"
+  ]
+}

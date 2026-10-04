@@ -699,6 +699,15 @@ def load_rules(rules_file: str) -> list[dict]:
     if isinstance(a, dict) and isinstance(a.get("rules"), list) and a["rules"]:
         return [{"name": r["name"], "pattern": r["pattern"], "level": r.get("level", "medium")}
                 for r in a["rules"] if isinstance(r, dict) and r.get("name") and r.get("pattern")]
+    # P2-4 行业规则包：config.json industry.packages.<name>.keywords → 规则（关键词 OR 正则）
+    if isinstance(cfg, dict):
+        ind = cfg.get("industry") or {}
+        pkg_name = ind.get("name") or "ecommerce"
+        pkg = (ind.get("packages") or {}).get(pkg_name) or {}
+        kws = pkg.get("keywords") or []
+        if kws:
+            return [{"name": f"{pkg_name}行业词", "pattern": "|".join(kws),
+                     "level": pkg.get("level", "medium")}]
     return DEFAULT_RULES
 
 
@@ -1244,6 +1253,45 @@ def media_archive(msgs: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------- P1-3 双人对话报告
+def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
+             extra: list[str] | None = None) -> None:
+    """P2-7 daemon 监控：轮询输入目录 mtime，变化则自动重跑 all（mtime 缓存避免空转）。
+
+    用法：chat-archive watch --input ./chats --out ./out --interval 120 --staff all
+    """
+    import subprocess
+    import time as _time
+    root = Path(input_dir)
+    if not root.is_dir():
+        raise ValueError(f"watch 需要输入目录（不是文件）：{input_dir}")
+    cache: dict[str, float] = {}
+    script = Path(__file__).resolve()
+    print(f"[watch] 监控目录 {root}（每 {interval}s 检查，输入变化自动重跑）")
+    print("[watch] 提示：初次运行会全量处理一次；之后仅当文件新增/修改时重跑。Ctrl+C 退出。")
+    first = True
+    while True:
+        now: dict[str, float] = {}
+        for p in root.rglob("*"):
+            if p.is_file():
+                try:
+                    now[str(p)] = p.stat().st_mtime_ns
+                except OSError:
+                    pass
+        changed = first or now != cache
+        if changed:
+            cmd = [sys.executable, str(script), "all", "--input", input_dir,
+                   "--out", out, "--staff", staff_arg or "all"]
+            print(f"[watch] {'初次全量' if first else '检测到输入变化'} → 执行："
+                  + " ".join(cmd))
+            try:
+                subprocess.run(cmd, check=False)
+            except Exception as e:
+                print(f"[watch] 重跑失败：{e}")
+            cache = now
+            first = False
+        _time.sleep(max(1, interval))
+
+
 def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
              staff: set[str] | None = None) -> Path:
     """P1-3 双人对话报告：两人消息时间流（气泡对话）+ 对话统计。输出 pair_report.html。"""
@@ -1261,6 +1309,19 @@ def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
         if t:
             topics.add(t)
     n_a, n_b = len(a), len(b)
+    # P2-8 回复延迟：B 对 A 每条消息的首次实质回复秒数（均值）；反向同理
+    def _reply_latency(from_msgs, to_msgs) -> float:
+        tot = cnt = 0
+        t_idx = 0
+        for m in from_msgs:
+            while t_idx < len(to_msgs) and to_msgs[t_idx]["sent_at"] <= m["sent_at"]:
+                t_idx += 1
+            if t_idx < len(to_msgs) and classify(to_msgs[t_idx]["content"]) == "substantive":
+                tot += (to_msgs[t_idx]["sent_at"] - m["sent_at"]).total_seconds()
+                cnt += 1
+        return round(tot / cnt, 0) if cnt else 0
+    lat_ba = _reply_latency(a, b)   # A 发言后 B 平均回复
+    lat_ab = _reply_latency(b, a)   # B 发言后 A 平均回复
     longest_a = longest_b = 0
     cur = prev = None
     cnt = 0
@@ -1298,7 +1359,7 @@ def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
 body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f6f8;color:#1f2933;margin:0;line-height:1.6;font-size:14px}}
 .wrap{{max-width:820px;margin:0 auto;padding:32px 18px}}
 h1{{font-size:22px;margin:0 0 4px}} .sub{{color:#6b7280;font-size:13px;margin:0 0 16px}}
-.cards{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px}}
+.cards{{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:18px}}
 .card{{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px}}
 .card .n{{font-size:20px;font-weight:700}} .card .k{{font-size:12px;color:#6b7280}}
 .chat{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px}}
@@ -1320,6 +1381,8 @@ footer{{text-align:center;color:#9aa3ab;font-size:12px;margin-top:18px}}
 <div class="card"><div class="n">{len(merged)}</div><div class="k">对话总数</div></div>
 <div class="card"><div class="n">{len(topics)}</div><div class="k">涉及话题</div></div>
 <div class="card"><div class="n">{max(longest_a, longest_b)}</div><div class="k">最长连续发言</div></div>
+<div class="card"><div class="n">{lat_ba}</div><div class="k">{_esc(user_b)}→{_esc(user_a)} 平均回复(s)</div></div>
+<div class="card"><div class="n">{lat_ab}</div><div class="k">{_esc(user_a)}→{_esc(user_b)} 平均回复(s)</div></div>
 </div>
 <h2 style="font-size:15px;margin:0 0 8px">对话时间流（{_esc(user_a)} 左 / {_esc(user_b)} 右）</h2>
 <div class="chat">{''.join(bubbles) if bubbles else '<p style="color:#9aa3ab">（无对话消息）</p>'}</div>
@@ -2713,6 +2776,53 @@ def _customer_view(msgs: list[dict], all_mode: bool) -> list[dict]:
 
 
 # ---------------------------------------------------------------- 输出
+def write_yaml(path: Path, rows: list[dict]) -> None:
+    """P2-1 极简 YAML 序列化（零依赖）：CSV 产物的 .yml 伴生版，供配置/文档工具消费。"""
+    def dump(obj, ind=0) -> str:
+        pad = "  " * ind
+        lines = []
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if isinstance(v, (dict, list)):
+                    lines.append(f"{pad}{k}:")
+                    lines.append(dump(v, ind + 1))
+                else:
+                    lines.append(f"{pad}{k}: {v!r}".replace("'", '"') if isinstance(v, str) else f"{pad}{k}: {v}")
+        elif isinstance(obj, list):
+            for it in obj:
+                if isinstance(it, (dict, list)):
+                    lines.append(f"{pad}-")
+                    lines.append(dump(it, ind + 1))
+                else:
+                    lines.append(f"{pad}- {it!r}")
+        return "\n".join(lines)
+    path.write_text(dump(rows) + "\n", encoding="utf-8")
+
+
+def export_chatlab(msgs: list[dict], path: Path) -> int:
+    """P2-2 ChatLab 标准导出：{id, sender, time, content, type} 行式 JSONL（形态借鉴，非抄码）。"""
+    n = 0
+    with open(path, "w", encoding="utf-8") as f:
+        for m in msgs:
+            f.write(json.dumps({
+                "id": m["msg_id"],
+                "sender": m.get("sender") or "",
+                "time": m["sent_at"].isoformat() if isinstance(m["sent_at"], datetime) else str(m["sent_at"]),
+                "content": m.get("content") or "",
+                "type": m.get("msg_type", "text"),
+            }, ensure_ascii=False) + "\n")
+            n += 1
+    return n
+
+
+def filter_active_window(msgs: list[dict], days: int = 0) -> list[dict]:
+    """P2-3 活跃窗口过滤：仅保留最近 N 天消息（0=全部）。"""
+    if not days or days <= 0:
+        return msgs
+    cutoff = datetime.now() - timedelta(days=days)
+    return [m for m in msgs if isinstance(m["sent_at"], datetime) and m["sent_at"] >= cutoff]
+
+
 def write_csv(path: Path, rows: list[dict]):
     if not rows:
         path.write_text("(无数据)\n", encoding="utf-8")
@@ -2778,6 +2888,66 @@ def ai_build_daily(msgs: list[dict], staff: str, target_date: str) -> str:
     return chat_completion(_LLM_SYSTEM, user, timeout=90)
 
 
+def kb_score(entries: list[dict]) -> list[dict]:
+    """P2-5 知识库质量评分：问答对数 / 平均问答长度 / 信息类型覆盖 / 链接含量 → 0-100 分。"""
+    out = []
+    for e in entries:
+        qas = e.get("qa", [])
+        n_qa = len(qas)
+        avg_len = round(sum(len(q.get("a", "")) + len(q.get("q", "")) for q in qas) / max(n_qa, 1))
+        n_types = len(e.get("info_types", []))
+        has_link = any("http" in (q.get("a", "") + q.get("q", "")) for q in qas)
+        score = min(100, 20 + n_qa * 15 + min(avg_len // 40, 20) + n_types * 8 + (10 if has_link else 0))
+        out.append({"topic": e.get("category", ""), "qa_pairs": n_qa, "avg_len": avg_len,
+                    "info_types": n_types, "has_link": has_link, "score": score})
+    out.sort(key=lambda x: -x["score"])
+    return out
+
+
+    kb_dir = run_dir / "knowledge"
+    kb_dir.mkdir(exist_ok=True)
+    entries, train, onboarding = build_knowledge(msgs, mask=not no_mask)
+    for e in entries:
+        (kb_dir / f"{e['filename']}.md").write_text(e["content"], encoding="utf-8")
+    try:
+        write_csv(kb_dir / "quality_scores.csv", kb_score(entries))
+    except Exception:
+        pass  # 评分失败不影响主流程
+    ai_n = 0
+    if use_llm:
+        try:
+            ai_kb = ai_build_knowledge(entries)
+        except Exception as e:
+            ai_kb = {}
+            print(f"  [LLM 知识库失败，降级规则版] {e}")
+        for fn, md in ai_kb.items():
+            (kb_dir / f"{fn}.md").write_text(md, encoding="utf-8")
+        ai_n = len(ai_kb)
+    (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
+    (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
+    # 训练样本级清洗（P1-15）：去重 / 低质过滤 / 红线词过滤 → training_clean.jsonl
+    try:
+        clean_rows, clean_report = clean_training(train, rules)
+        if clean_rows:
+            (kb_dir / "training_clean.jsonl").write_text(
+                "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
+        write_csv(kb_dir / "training_clean_report.csv", clean_report)
+    except Exception as e:
+        errors.append(f"训练集清洗失败: {e}")
+        print(f"[错误] 训练集清洗失败：{e}")
+    # FAQ 草稿（P2-20）：高频已解决问答 → Direct Answer/Details/Related + 搜索词表
+    try:
+        draft_md, terms = faq_draft(entries, faq_min)
+        (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
+        write_csv(kb_dir / "faq_search_terms.csv", terms)
+    except Exception as e:
+        errors.append(f"FAQ 草稿失败: {e}")
+        print(f"[错误] FAQ 草稿失败：{e}")
+    n_train = len([l for l in train.splitlines() if l])
+    return len(entries), ai_n, n_train
+
+
+
 def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_llm: bool,
                       no_mask: bool, faq_min: int, errors: list[str]) -> tuple[int, int, int]:
     """知识库构建 + 训练清洗 + FAQ 草稿（main 步骤 4 与 kb-draft 子命令共用）。
@@ -2789,6 +2959,10 @@ def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_ll
     entries, train, onboarding = build_knowledge(msgs, mask=not no_mask)
     for e in entries:
         (kb_dir / f"{e['filename']}.md").write_text(e["content"], encoding="utf-8")
+    try:
+        write_csv(kb_dir / "quality_scores.csv", kb_score(entries))
+    except Exception:
+        pass  # 评分失败不影响主流程
     ai_n = 0
     if use_llm:
         try:
@@ -2847,7 +3021,7 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 def main():
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
-                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly", "mcp", "pair"],
+                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly", "mcp", "pair", "watch"],
                     help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）；kb-draft=仅生成 FAQ 草稿")
     ap.add_argument("--input", default="", help="输入文件或目录（明文或加密备份，kb-sync 无需；缺省读 config.json defaults.input）")
     ap.add_argument("--staff", default="", help="员工名单三种写法：逗号名单（张三,李四）、all（全部发送人视为员工）、名单文件路径（每行一个）；不传时所有人视为客户")
@@ -2865,6 +3039,8 @@ def main():
     ap.add_argument("--no-llm", dest="llm", action="store_false", help="禁用 LLM 提炼，强制规则版")
     ap.add_argument("--mask-all", action="store_true", help="输入后立即全链路脱敏（PII掩码+员工客户匿名化），所有产物均脱敏，默认关闭")
     ap.add_argument("--keep-snapshots", type=int, default=None, help="archive/ 保留最近 N 份快照（覆盖 config.json，0=不清理）")
+    ap.add_argument("--active-days", type=int, default=0, help="活跃窗口：仅处理最近 N 天消息（0=全部，P2-3）")
+    ap.add_argument("--interval", type=int, default=60, help="watch：轮询间隔秒数（默认 60，P2-7）")
     ap.add_argument("--kb-config", default="", help="kb-sync 时指定 config.json 路径（默认仓库根 config.json）")
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
@@ -2895,6 +3071,17 @@ def main():
     if args.task == "convert":
         items, fmts = load_input(args.input, args.tool_cmd)
         print(f"转换完成：{len(items)} 条消息（格式: {fmts}）")
+        return
+
+    if args.task == "watch":
+        if not args.input:
+            print("[错误] watch 需要 --input 输入目录", file=sys.stderr)
+            sys.exit(1)
+        try:
+            run_watch(args.input, args.out, args.interval, args.staff)
+        except ValueError as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            sys.exit(1)
         return
 
     if args.task == "pair":
@@ -2966,6 +3153,10 @@ def main():
 
     items, fmts = load_input(args.input, args.tool_cmd)
     msgs = normalize_messages(items, staff, load_staff_aliases(args.staff, args.staff_file))
+    if getattr(args, "active_days", 0):
+        _before = len(msgs)
+        msgs = filter_active_window(msgs, args.active_days)
+        print(f"活跃窗口：仅保留最近 {args.active_days} 天 → {len(msgs)} 条（原 {_before} 条）")
     print(f"输入：{len(items)} 条原始消息 → {len(msgs)} 条有效消息（格式: {fmts or '未知'}）")
     if not msgs:
         print("[错误] 未解析出有效消息。请检查输入格式（TXT/MD/JSON/CSV）或加密备份配置 --tool-cmd。")
@@ -3438,6 +3629,20 @@ def main():
     except Exception as e:
         errors.append(f"HTML 报告生成失败: {e}")
         print(f"[错误] HTML 报告生成失败（其余产物已生成）：{e}")
+
+    # 7.5 P2-1/2: CSV 产物 YAML 伴生版 + ChatLab 标准导出
+    try:
+        _y = 0
+        for _csv in run_dir.glob("*.csv"):
+            _rows = _read_csv_rows(_csv)
+            if _rows:
+                write_yaml(_csv.with_suffix(".yml"), _rows)
+                _y += 1
+        _n_chatlab = export_chatlab(msgs, run_dir / "chatlab_export.jsonl")
+        print(f"[20.5/21] 产物 YAML 伴生（{_y} 个）→ *.yml · ChatLab 标准导出 → chatlab_export.jsonl（{_n_chatlab} 条）")
+    except Exception as e:
+        errors.append(f"YAML/ChatLab 导出失败: {e}")
+        print(f"[错误] YAML/ChatLab 导出失败：{e}")
 
     # 8. 快照保留策略：out/ 下每个 <日期_时间>/ 目录就是一次运行的完整结果；
     #    只保留最近 N 份（config.json snapshot.keep，默认 30，0=不清理），防止长期运行磁盘膨胀
