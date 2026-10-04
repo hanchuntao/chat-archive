@@ -55,7 +55,7 @@
 | 模块 | 职责 | 关键不变量 |
 |---|---|---|
 | `cli.py` | 子命令路由（init/import/search/stats/report/weekly/vectorize/info/backup）+ 零参数全流程 | 全局 `--db`/`--json`/`--version`；backup 用 sqlite online backup |
-| `db.py` | schema/连接/幂等写入/FTS rebuild | msg_id=sha256[:16] 幂等；WAL + synchronous=NORMAL；FTS 显式探测降级报错 |
+| `db.py` | schema/连接/幂等写入/FTS rebuild + **版本化迁移** | msg_id=sha256[:16] 幂等；WAL + synchronous=NORMAL；FTS 显式探测降级报错；PRAGMA user_version + MIGRATIONS 逐级升级，旧库自动迁移、未来库拒绝打开 |
 | `pipeline/clean.py` | 噪声判定（表情/灌水/占位符） | **不含**「在吗/在」（询单信号，与业务层口径一致） |
 | `pipeline/desensitize.py` | PII 规则引擎（mask/generalize/redact + 审计） | 顺序敏感：redact 优先短路；规则唯一来源 |
 | `pipeline/ingest.py` | 解析→清洗→脱敏→入库 编排 | 支持 .json/.jsonl/.txt/.md/.csv；幂等 |
@@ -66,10 +66,10 @@
 | `report.py` | 数据层周报（规则版 + LLM 版降级） | LLM 失败自动降级不阻塞 |
 | `llm.py` | OpenAI 兼容 chat_completion | 环境变量优先于 config；无 Key 明确报错 |
 | `vector.py` | 可选 Chroma 向量化 | 未装 chromadb → 友好 RuntimeError |
-| 业务脚本 | 全部业务语义（见 §5） | 每步 try/except 收 errors，尾部统一报错 exit 1 |
+| 业务脚本 | 全部业务语义（见 §5）+ 快照完整性 manifest | 每步 try/except 收 errors，尾部统一报错 exit 1；运行末尾生成 manifest.json（产物 SHA256+运行参数），`verify` 子命令校验篡改/缺失/多余 |
 | `sync_kb.py` | 知识库双通道同步（本地 + 腾讯 ima） | 仅上传脱敏产物；未配 Key 导出 ima_export |
-| `convert_wx.py` | wechat-cli 导出文本 → 标准 JSON | 与 importers 输出同构 |
-| `render_html.py` | 业务快照 → 离线 HTML 看板 | 纯标准库，无网络 |
+| `render_html.py` | 业务快照 → 离线 HTML 看板 | 纯标准库，无网络
+| `convert_wx.py` | wechat-cli/手工文本 → 标准 JSON | 编码自动检测（UTF-8/GBK/GB18030/latin-1）；直调测试覆盖 99% |
 
 ## 5. 业务层子流程（main 步骤）
 
@@ -89,4 +89,4 @@
 | LLM | 可选、失败降级规则版 | 不可让外部 API 阻塞本地交付 |
 | 输入 | 明文优先，加密备份走 --tool-cmd 桥接 | 微信官方备份无法明文导出（已查证） |
 | 隐私 | 默认知识库脱敏；--mask-all 全链路脱敏 | 内部管理看原文、交付第三方看脱敏，分层 |
-| 快照 | 每次运行独立目录 + latest 固定入口 + 保留策略 | 可追溯、可回滚、可环比 |
+| 快照 | 每次运行独立目录 + latest 固定入口 + 保留策略 + manifest.json SHA256 完整性 | 可追溯、可回滚、可环比、防篡改可审计 |

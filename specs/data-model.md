@@ -1,5 +1,11 @@
 # 数据模型（specs）
 
+## 0. Schema 版本管理
+
+- 数据库以 `PRAGMA user_version` 记录 schema 版本（当前 **SCHEMA_VERSION=1**），`chat_archive/db.py` 的 `migrate()` 在打开连接时按 `MIGRATIONS` 逐级升级（事务内，失败回滚）。
+- 旧版本代码创建的库（user_version=0）自动补齐建表并置为最新；版本高于程序支持时拒绝打开（提示升级程序）。
+- 未来加列/建表：在 `MIGRATIONS` 追加新版本号与 SQL，老库自动迁移，**无需手工删库**。
+
 ## 1. SQLite 主库（数据层 `archive.db`）
 
 ```sql
