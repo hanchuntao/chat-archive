@@ -1206,6 +1206,101 @@ def media_archive(msgs: list[dict]) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------- P0-4 主动触达（Webhook/邮件）
+def collect_notify_events(fups: list[dict], cfg: dict) -> list[dict]:
+    """从待跟进事项提取需主动触达的事件（丢单/商机/待跟进）。"""
+    evts = []
+    for r in fups:
+        tp = r.get("type") or "待跟进"
+        if any(k in tp for k in ("漏回复", "询价", "承诺", "商机", "待跟进")):
+            evts.append({
+                "type": tp, "group": r.get("group") or "",
+                "sender": r.get("source") or r.get("assignee") or "",
+                "ask": (r.get("content") or "")[:120],
+                "wait": r.get("due") or r.get("time") or "", "deadline": r.get("due") or "",
+            })
+    return evts
+
+
+def notify_webhook(events: list[dict], wh: dict) -> str:
+    """P0-4 主动触达：钉钉/企微/generic webhook POST（stdlib urllib）。返回结果描述。"""
+    if not events or not wh.get("enabled") or not wh.get("url"):
+        return "Webhook 未启用或无事件，跳过"
+    import json as _j, time as _t, hashlib as _h, hmac as _hm, urllib.request as _ur
+    import base64 as _b, urllib.parse as _up
+    url = wh["url"]
+    secret = wh.get("secret") or ""
+    wtype = (wh.get("type") or "generic").lower()
+    title = f"chat-archive 丢单/商机告警（{len(events)} 条）"
+    lines = []
+    for e in events[:20]:
+        wait = f"（等待 {e['wait']}）" if e.get("wait") else ""
+        lines.append(f"- **{e['type']}** · {e['sender']} · {e['group']}\n  {e['ask']}{wait}")
+    text = f"### {title}\n" + "\n".join(lines)
+    if wtype == "dingtalk":
+        if secret:
+            ts = str(round(_t.time() * 1000))
+            sign = _hm.new(secret.encode(), f"{ts}\n{secret}".encode(), _h.sha256).digest()
+            url += ("&" if "?" in url else "?") + "&".join([
+                "timestamp=" + ts, "sign=" + _up.quote(_b.b64encode(sign).decode())])
+        payload = {"msgtype": "markdown", "markdown": {"title": title, "text": text}}
+    elif wtype == "wecom":
+        payload = {"msgtype": "markdown", "markdown": {"content": text}}
+    else:
+        payload = {"events": events[:20], "title": title}
+    try:
+        req = _ur.Request(url, data=_j.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                          headers={"Content-Type": "application/json"})
+        resp = _ur.urlopen(req, timeout=10)
+        return f"Webhook 已推送 {len(events)} 条事件（HTTP {resp.status}）"
+    except Exception as e:
+        return f"Webhook 推送失败：{e}"
+
+
+def notify_email(events: list[dict], em: dict) -> str:
+    """P0-4 邮件触达（smtplib HTML 摘要）。"""
+    if not events or not em.get("enabled") or not em.get("smtp_host") or not em.get("to"):
+        return "邮件未启用或无收件人，跳过"
+    import smtplib
+    from email.mime.text import MIMEText
+    rows = "".join(
+        f"<li><b>{e['type']}</b> · {e['sender']} · {e['group']}<br>{e['ask']}"
+        f"（{e['wait']}）</li>"
+        for e in events[:20])
+    html = f"<h3>chat-archive 丢单/商机告警（{len(events)} 条）</h3><ul>{rows}</ul>"
+    msg = MIMEText(html, "html", "utf-8")
+    msg["Subject"] = f"chat-archive 丢单/商机告警（{len(events)} 条）"
+    msg["From"] = em.get("username", "")
+    msg["To"] = em.get("to", "")
+    try:
+        if em.get("smtp_port", 25) == 465:
+            s = smtplib.SMTP_SSL(em["smtp_host"], em.get("smtp_port", 465), timeout=10)
+        else:
+            s = smtplib.SMTP(em["smtp_host"], em.get("smtp_port", 25), timeout=10)
+        with s:
+            if em.get("username"):
+                s.login(em["username"], em.get("password", ""))
+            s.send_message(msg)
+        return f"邮件已发送至 {em['to']}"
+    except Exception as e:
+        return f"邮件发送失败：{e}"
+
+
+def notify_all(fups: list[dict], cfg: dict) -> str:
+    """P0-4 统一入口：按 config.webhook 配置推送丢单/商机/待跟进事件。"""
+    wh = cfg.get("webhook") or {}
+    events = collect_notify_events(fups, cfg)
+    if not events:
+        return "无待触达事件（丢单/商机/待跟进为空）"
+    out = []
+    if wh.get("enabled") and wh.get("url"):
+        out.append(notify_webhook(events, wh))
+    em = wh.get("email") or {}
+    if em.get("enabled"):
+        out.append(notify_email(events, em))
+    return "；".join(out) if out else "Webhook/邮件均未启用，跳过推送（已收集 {} 条事件）".format(len(events))
+
+
 # ---------------------------------------------------------------- 丢单/商机信号（P0-6）
 INQUIRY_HINTS = ["多少钱", "报价", "怎么卖", "有货", "价格", "批", "采购", "要多少",
                  "拿货", "下单", "买", "怎么买", "链接", "哪里买", "多少钱一"]
@@ -2744,6 +2839,14 @@ def main():
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
     n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
     print(f"[3/3] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
+
+    # P0-4 主动触达：丢单/商机/待跟进事件推送（config.webhook）
+    try:
+        _notify_r = notify_all(fups, load_config())
+        if _notify_r and "跳过" not in _notify_r and "无待触达" not in _notify_r:
+            print(f"[推送] {_notify_r}")
+    except Exception as e:
+        print(f"[推送] 跳过（异常：{e}）")
 
     # 4. 知识库（清洗脱敏）+ kb-draft 子命令共用 _build_kb_section
     try:

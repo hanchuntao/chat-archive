@@ -237,5 +237,20 @@
   },
   "faq": {
     "min_freq": 2
+  },
+  "webhook": {
+    "enabled": false,
+    "type": "generic",
+    "url": "",
+    "secret": "",
+    "email": {
+      "enabled": false,
+      "smtp_host": "",
+      "smtp_port": 465,
+      "username": "",
+      "password": "",
+      "to": ""
+    },
+    "comment": "P0-4 主动触达：丢单/商机/待跟进事件推送。type=generic|dingtalk|wecom；钉钉/企微带 secret 时自动加签；email 用 smtplib 发 HTML 摘要"
   }
 }
