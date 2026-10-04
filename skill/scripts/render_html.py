@@ -766,6 +766,75 @@ def _render_timeline(timeline: list[dict], media_rows: list[dict], trend_md: str
     return "".join(html)
 
 
+def _render_keywords(rows: list[dict]) -> str:
+    """年度关键词 TopN（第3轮吸收：对齐 WeChatMsg/MemoTrace 年度报告）。"""
+    if not rows:
+        return '<p class="tag">（无关键词数据）</p>'
+    trs = []
+    for i, r in enumerate(rows[:20], 1):
+        trs.append(f"<tr><td class='num'>{i}</td><td>{escape(r.get('word',''))}</td>"
+                   f"<td class='num'>{r.get('count','')}</td><td class='num'>{escape(r.get('share',''))}</td></tr>")
+    return ('<table><colgroup><col style="width:8%"><col style="width:52%"><col style="width:18%">'
+            '<col style="width:22%"></colgroup>'
+            '<thead><tr><th>#</th><th>关键词</th><th>出现次数</th><th>占消息比</th></tr></thead>'
+            '<tbody>' + "".join(trs) + "</tbody></table>")
+
+
+def _render_sentiment(senti: dict) -> str:
+    """情感倾向（第3轮吸收）：总体卡片 + 近 14 天每日量 + 成员 Top。"""
+    if not senti:
+        return '<p class="tag">（无情感数据）</p>'
+    t = senti.get("total", {})
+    cards = (f"<div class='tag' style='margin-bottom:10px'>积极 <b>{t.get('pos',0)}</b>（{t.get('pos_rate','-')}） · "
+             f"消极 <b>{t.get('neg',0)}</b>（{t.get('neg_rate','-')}） · 中性 {t.get('neu',0)}</div>")
+    daily = senti.get("daily", [])
+    bars = ""
+    if daily:
+        mx = max((d.get("total", 0) or 1) for d in daily) or 1
+        seg = ""
+        for d in daily[-14:]:
+            tot = d.get("total", 0)
+            pct = tot / mx * 100
+            seg += (f"<div style='margin:3px 0;display:flex;gap:8px;align-items:center'>"
+                    f"<span style='width:86px;flex:none'>{escape(d.get('date',''))}</span>"
+                    f"<div class='bar' style='flex:1'><i style='width:{pct:.0f}%'></i></div>"
+                    f"<span class='num' style='flex:none'>{tot}（+{d.get('pos',0)}/-{d.get('neg',0)}）</span></div>")
+        bars = "<div style='margin:10px 0'><b>每日消息量（近 14 天，含积极/消极）</b></div>" + seg
+    mem = senti.get("by_member", [])
+    mtrs = ""
+    if mem:
+        mtrs = ('<table style="margin-top:10px"><colgroup><col style="width:30%"><col style="width:12%">'
+                '<col style="width:12%"><col style="width:12%"><col style="width:17%"><col style="width:17%"></colgroup>'
+                '<thead><tr><th>成员</th><th>积极</th><th>消极</th><th>中性</th><th>积极率</th><th>消极率</th></tr></thead><tbody>' +
+                "".join(f"<tr><td>{escape(m.get('userid',''))}</td><td class='num'>{m.get('pos','')}</td>"
+                        f"<td class='num'>{m.get('neg','')}</td><td class='num'>{m.get('neu','')}</td>"
+                        f"<td class='num'>{escape(m.get('pos_rate',''))}</td><td class='num'>{escape(m.get('neg_rate',''))}</td></tr>"
+                        for m in mem) + "</tbody></table>")
+    return cards + bars + mtrs
+
+
+def _render_members(rows: list[dict]) -> str:
+    """群成员完整信息表（第3轮吸收：对齐 WeChatMsg「导出群成员完整信息表」）。"""
+    if not rows:
+        return '<p class="tag">（无成员数据）</p>'
+    trs = []
+    for r in rows[:30]:
+        trs.append(f"<tr><td>{escape(r.get('userid',''))}</td>"
+                   f"<td class='num'>{r.get('sent','')}</td><td class='num'>{r.get('effective','')}</td>"
+                   f"<td class='num'>{escape(r.get('filler_rate',''))}</td><td class='num'>{r.get('active_days','')}</td>"
+                   f"<td class='num'>{r.get('chars','')}</td><td class='num'>{r.get('mentioned','')}</td>"
+                   f"<td class='num'>{r.get('pos','')}</td><td class='num'>{r.get('neg','')}</td>"
+                   f"<td class='num'>{escape(r.get('first_time',''))}</td><td class='num'>{escape(r.get('last_time',''))}</td>"
+                   f"<td class='num'>{escape(r.get('peak_hour','-'))}</td><td class='num'>{r.get('night','0')}</td></tr>")
+    return ('<div style="overflow-x:auto"><table><colgroup><col style="width:11%"><col style="width:5%"><col style="width:5%">'
+            '<col style="width:7%"><col style="width:6%"><col style="width:6%"><col style="width:5%">'
+            '<col style="width:5%"><col style="width:5%"><col style="width:13%"><col style="width:13%">'
+            '<col style="width:7%"><col style="width:6%"></colgroup>'
+            '<thead><tr><th>成员</th><th>发言</th><th>有效</th><th>口水率</th><th>活跃天数</th><th>字数</th>'
+            '<th>被@</th><th>积极</th><th>消极</th><th>首次发言</th><th>最后发言</th><th>高峰</th><th>熬夜</th></tr></thead>'
+            '<tbody>' + "".join(trs) + "</tbody></table></div>")
+
+
 def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
@@ -788,6 +857,15 @@ def render(out_dir: Path, title: str = "") -> str:
     sats = _read_csv(out_dir / "satisfaction.csv")
     health = _read_csv(out_dir / "health.csv")
     sop_rows = _read_csv(out_dir / "sop_compliance.csv")
+    keywords = _read_csv(out_dir / "keywords.csv")
+    sentiment = {}
+    _sp = out_dir / "sentiment.json"
+    if _sp.exists():
+        try:
+            sentiment = json.loads(_sp.read_text(encoding="utf-8"))
+        except Exception:
+            sentiment = {}
+    members = _read_csv(out_dir / "members.csv")
     ledger = _read_csv(out_dir / "payment_ledger.csv")
     revokes = _read_csv(out_dir / "revoke_audit.csv")
     funnel = _read_csv(out_dir / "funnel.csv")
@@ -851,6 +929,7 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("15", "销售漏斗与问题分级", _render_funnel_level(funnel, lv_rows), "咨询→成交卡点 · P0-P3 处理优先级"),
         _section("16", "会话时间线与媒体归档", _render_timeline(timeline, media_rows, trend_md), "客户交互轨迹 · 多模态占位 · 周期环比"),
         _section("17", "@提及与消息明细", _render_mentions(mentions, msg_rows), "关键对接人识别 · 扁平表透视"),
+        _section("18", "年度分析与成员档案", _render_keywords(keywords) + _render_sentiment(sentiment) + _render_members(members), "高频词 TopN · 情感倾向 · 成员完整档案（对齐 WeChatMsg/MemoTrace）"),
     ])
 
     return f"""<!DOCTYPE html>

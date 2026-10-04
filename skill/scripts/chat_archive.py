@@ -969,6 +969,124 @@ def activity_summary(msgs: list[dict]) -> dict:
     }
 
 
+# ---------------------------------------------------------------- 年度分析（第3轮吸收：对齐 WeChatMsg/MemoTrace 年度报告）
+SENTI_POS = ("感谢", "谢谢", "好评", "满意", "没问题", "可以的", "好的", "赞", "给力", "靠谱",
+             "放心", "支持", "收到", "安排", "马上", "尽快", "优惠", "划算", "值得", "完美",
+             "棒", "优秀", "不错", "贴心", "耐心", "专业", "效率", "到位", "及时", "顺利",
+             "开心", "喜欢", "顶", "谢谢啦", "感谢您", "非常好", "太好了", "辛苦了")
+SENTI_NEG = ("差评", "投诉", "退款", "退货", "问题", "麻烦", "不行", "不能", "没货", "等待",
+             "慢", "气死", "愤怒", "失望", "差劲", "烂", "赔", "骗", "假", "坏", "垃圾",
+             "坑", "白等", "没收到", "未收到", "迟迟", "一直不", "怎么回事", "什么情况",
+             "太差", "不负责", "忽悠", "欺骗", "生气", "恼火", "伤心", "糟糕", "尴尬", "无语")
+STOP_WORDS = {"的", "了", "吗", "吧", "啊", "呢", "哦", "嗯", "我", "你", "他", "她", "它",
+              "我们", "你们", "他们", "这", "那", "是", "在", "有", "就", "都", "也", "很",
+              "还", "和", "与", "或", "一个", "什么", "怎么", "为什么", "大家", "今天",
+              "明天", "昨天", "现在", "可以", "没有", "不是", "这个", "那个", "一下",
+              "哈哈", "呵呵", "嗯嗯", "老师", "老板", "客户", "亲", "宝贝", "客服",
+              "收到", "谢谢", "感谢", "回复", "发货", "安排", "好的", "在的", "稍等"}
+
+
+def _text_plain(content: str) -> str:
+    """去媒体标记后的纯文本。"""
+    import re as _re
+    return _re.sub(r'\[[^\]]+\]', '', content or '')
+
+
+def top_keywords(msgs: list[dict], top_n: int = 20) -> list[dict]:
+    """年度关键词/高频词 TopN（纯标准库：连续中文 2-6 字候选 + 停用词过滤）。
+    对齐 WeChatMsg/MemoTrace 年度报告「年度关键词 / 词云」能力。"""
+    from collections import Counter
+    cnt: Counter = Counter()
+    for m in msgs:
+        for seg in re.findall(r'[\u4e00-\u9fff]{2,6}', _text_plain(m["content"])):
+            if seg in STOP_WORDS:
+                continue
+            cnt[seg] += 1
+    total = len(msgs) or 1
+    return [{"word": w, "count": n, "share": f"{n / total * 100:.1f}%"}
+            for w, n in cnt.most_common(top_n)]
+
+
+def sentiment_stats(msgs: list[dict]) -> dict:
+    """情感倾向：总体 + 每日序列 + 成员 Top（积极/消极词表命中，纯标准库）。"""
+    from collections import Counter, OrderedDict
+
+    def _label(c: str) -> str:
+        pos = sum(1 for w in SENTI_POS if w in c)
+        neg = sum(1 for w in SENTI_NEG if w in c)
+        return "pos" if pos > neg else ("neg" if neg > pos else "neu")
+
+    total: Counter = Counter()
+    daily: "OrderedDict[str, dict]" = OrderedDict()
+    member: "OrderedDict[str, Counter]" = OrderedDict()
+    for m in msgs:
+        c = _text_plain(m["content"])
+        if not c:
+            continue
+        lab = _label(c)
+        total[lab] += 1
+        d = m["sent_at"].strftime("%Y-%m-%d")
+        dd = daily.setdefault(d, Counter())
+        dd[lab] += 1
+        mm = member.setdefault(m["sender"], Counter())
+        mm[lab] += 1
+    n = sum(total.values()) or 1
+    members = [{"userid": uid, "pos": cnt["pos"], "neg": cnt["neg"], "neu": cnt["neu"],
+                "pos_rate": f"{cnt['pos'] / (sum(cnt.values()) or 1) * 100:.0f}%",
+                "neg_rate": f"{cnt['neg'] / (sum(cnt.values()) or 1) * 100:.0f}%"}
+               for uid, cnt in sorted(member.items(),
+                                      key=lambda kv: -(kv[1]["pos"] + kv[1]["neg"]))]
+    return {
+        "total": {"pos": total["pos"], "neg": total["neg"], "neu": total["neu"],
+                  "pos_rate": f"{total['pos'] / n * 100:.1f}%",
+                  "neg_rate": f"{total['neg'] / n * 100:.1f}%"},
+        "daily": [{"date": d, "pos": cnt["pos"], "neg": cnt["neg"], "neu": cnt["neu"],
+                   "total": sum(cnt.values())} for d, cnt in daily.items()],
+        "by_member": members[:20],
+    }
+
+
+def member_summary(msgs: list[dict], act_rows: list[dict]) -> list[dict]:
+    """群成员完整信息表（对齐 WeChatMsg「导出群成员完整信息表」）：
+    发言数/有效/口水率/活跃天数/字数/被@次数/情感/首末发言/高峰时段/熬夜。"""
+    from collections import OrderedDict
+    act = {r["userid"]: r for r in act_rows}
+    per: "OrderedDict[str, dict]" = OrderedDict()
+    for m in msgs:
+        r = per.setdefault(m["sender"], {"userid": m["sender"], "sent": 0, "chars": 0,
+                                         "mentioned": 0, "first": "", "last": "",
+                                         "pos": 0, "neg": 0})
+        r["sent"] += 1
+        c = _text_plain(m["content"])
+        r["chars"] += len(c)
+        r["mentioned"] += len(re.findall(r'@[\u4e00-\u9fffA-Za-z0-9_-]{1,20}', c))
+        lab = "pos" if sum(1 for w in SENTI_POS if w in c) > sum(1 for w in SENTI_NEG if w in c)             else ("neg" if sum(1 for w in SENTI_NEG if w in c) > sum(1 for w in SENTI_POS if w in c) else "neu")
+        if lab == "pos":
+            r["pos"] += 1
+        elif lab == "neg":
+            r["neg"] += 1
+        ts = m["sent_at"].strftime("%Y-%m-%d %H:%M")
+        if not r["first"] or ts < r["first"]:
+            r["first"] = ts
+        if not r["last"] or ts > r["last"]:
+            r["last"] = ts
+    rows = []
+    for uid, r in per.items():
+        a = act.get(uid, {})
+        total = r["sent"] or 1
+        rows.append({
+            "userid": uid, "sent": r["sent"],
+            "effective": a.get("effective", r["sent"]),
+            "filler_rate": f"{a.get('filler', 0) / total * 100:.0f}%",
+            "active_days": a.get("active_days", 0),
+            "chars": r["chars"], "mentioned": r["mentioned"],
+            "pos": r["pos"], "neg": r["neg"],
+            "first_time": r["first"], "last_time": r["last"],
+            "peak_hour": a.get("peak_hour", "-"), "night": a.get("night", 0),
+        })
+    return sorted(rows, key=lambda x: -x["sent"])
+
+
 # ---------------------------------------------------------------- 丢单/商机信号（P0-6）
 INQUIRY_HINTS = ["多少钱", "报价", "怎么卖", "有货", "价格", "批", "采购", "要多少",
                  "拿货", "下单", "买", "怎么买", "链接", "哪里买", "多少钱一"]
@@ -2507,6 +2625,21 @@ def main():
     except Exception as e:
         errors.append(f"活跃度统计失败: {e}")
         print(f"[错误] 活跃度统计失败：{e}")
+
+    # 9. 年度分析与成员档案（第3轮吸收：对齐 WeChatMsg/MemoTrace 年度报告）
+    #    高频词 TopN / 情感倾向（总体+每日+成员）/ 群成员完整信息表
+    try:
+        kws = top_keywords(msgs, 20)
+        write_csv(run_dir / "keywords.csv", kws)
+        senti = sentiment_stats(msgs)
+        (run_dir / "sentiment.json").write_text(json.dumps(senti, ensure_ascii=False, indent=1),
+                                                encoding="utf-8")
+        mem = member_summary(msgs, act)
+        write_csv(run_dir / "members.csv", mem)
+        print(f"[9/9] 年度分析（高频词/情感/成员档案）→ keywords.csv / sentiment.json / members.csv")
+    except Exception as e:
+        errors.append(f"年度分析失败: {e}")
+        print(f"[错误] 年度分析失败：{e}")
 
     # 7. 按时段压缩文本（P1-⑦，省 LLM token + 快速浏览）
     try:

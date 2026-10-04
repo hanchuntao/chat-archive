@@ -64,6 +64,9 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `insight_level.csv` | 客户痛点分级 P0-P3（P0 最优先解决） |
 | `trend.md` | 周期环比：本期 vs 上期关键指标 + 新冒头问题 |
 | `timeline.json` / `media_manifest.csv` | 客户会话时间线 / 图片语音等占位清单 |
+| `keywords.csv` | 年度高频词 TopN（词云数据源，对齐 WeChatMsg/MemoTrace 年度报告） |
+| `sentiment.json` | 情感倾向：总体 / 每日趋势 / 成员积极消极（纯标准库词表） |
+| `members.csv` | 群成员完整信息表：发言/有效/口水率/活跃天数/字数/被@/情感/首末发言/高峰/熬夜 |
 | `mentions.csv` | @提及统计：谁是被 @ 最多的关键对接人 |
 | `messages.csv` | 扁平消息表：时间/发送人/角色/话题/内容，Excel 直接透视 |
 | `assessment.md` | 绩效考核评分 |
