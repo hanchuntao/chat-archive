@@ -138,17 +138,37 @@ def is_system_line(line: str) -> bool:
     return any(p.search(line) for p in SYSTEM_PATTERNS)
 
 
+_CONFIG_CACHE: dict | None = None
+_CONFIG_CACHE_SIG: tuple = (0, 0)
+
+
 def load_config() -> dict:
-    """读取项目根 config.json（快照保留策略等）；缺失或损坏时返回默认值。"""
+    """读取项目根 config.json（快照保留策略等）；缺失或损坏时返回默认值。
+
+    带 (mtime, size) 签名缓存：main() 全程复用同一份配置避免反复 IO；
+    文件被外部修改后签名变化自动重读（测试/用户改配置即时生效）。
+    """
+    global _CONFIG_CACHE, _CONFIG_CACHE_SIG
     cfg_path = Path(__file__).resolve().parents[2] / "config.json"
+    sig = (0, 0)
     if cfg_path.exists():
         try:
-            data = json.loads(cfg_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
+            st = cfg_path.stat()
+            sig = (st.st_mtime, st.st_size)
+        except OSError:
+            sig = (0, 0)
+    if _CONFIG_CACHE is not None and _CONFIG_CACHE_SIG == sig:
+        return _CONFIG_CACHE
+    data: dict = {}
+    if cfg_path.exists():
+        try:
+            raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
         except Exception:
             pass
-    return {}
+    _CONFIG_CACHE, _CONFIG_CACHE_SIG = data, sig
+    return data
 
 
 # ---------------------------------------------------------------- 输入解析
@@ -329,7 +349,10 @@ def parse_file(path: Path) -> tuple[list[dict], str]:
     else:
         cands = [_parse_json, _parse_txt_md, _parse_csv]
     for fn in cands:
-        items = fn(path)
+        try:
+            items = fn(path)
+        except ValueError:
+            continue  # 探测解析失败（如坏 JSON）继续试下一种格式
         if items is not None:
             return items, ("json" if suffix in (".json", ".jsonl") else suffix.lstrip(".") or "txt")
     return [], ""
@@ -476,7 +499,7 @@ def effective_stats(msgs: list[dict]) -> list[dict]:
 def build_daily_report(msgs: list[dict], staff: str, target_date: str) -> str:
     day = [m for m in msgs if m["is_staff"] and m["sender"] == staff and m["sent_at"].strftime("%Y-%m-%d") == target_date]
     effective = [m for m in day if classify(m["content"]) == "substantive"]
-    filler = day if False else [m for m in day if classify(m["content"]) == "filler"]
+    filler = [m for m in day if classify(m["content"]) == "filler"]
     hits = [m for m in day if detect_violations(m["content"])]
     lines = [f"# {staff} 工作日报（{target_date}）", "",
              f"- 消息总数：{len(day)}（有效信息 {len(effective)}，口水/敷衍 {len(filler)}）", "",
@@ -687,9 +710,12 @@ def load_scheme(scheme_arg: str = "", duty_arg: str = "") -> dict:
         for k in DEFAULT_SCHEME:
             if k in a and isinstance(a[k], (int, float)):
                 scheme[k] = int(a[k])
+    # 参数名别名：文档/CLI 用 base（=base_score），实现键名 base_score
+    _ALIAS = {"base": "base_score", "unanswered": "unanswered_penalty"}
     if scheme_arg:
         for kv in scheme_arg.split(","):
             k, _, v = kv.partition(":")
+            k = _ALIAS.get(k.strip(), k.strip())
             if k in scheme and v.strip().lstrip("-").isdigit():
                 scheme[k] = int(v.strip())
     scheme["duty"] = {}
@@ -1372,7 +1398,9 @@ def filter_incremental(msgs: list[dict], state_dir: Path) -> tuple[list[dict], i
     groups = hist.get("groups", {})
     new, skipped = [], 0
     for m in msgs:
-        anchor = groups.get(m["group_id"], {}).get("last_message_time", "")
+        # 与 update_memory_layer 同源归一：空 group_id → "_"（修复锚点 miss）
+        gid = m["group_id"] or m["group_name"] or "_"
+        anchor = groups.get(gid, {}).get("last_message_time", "")
         if anchor:
             cut = _parse_dt(anchor)
             if cut and m["sent_at"] <= cut:
@@ -2133,6 +2161,51 @@ def ai_build_daily(msgs: list[dict], staff: str, target_date: str) -> str:
     return chat_completion(_LLM_SYSTEM, user, timeout=90)
 
 
+def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_llm: bool,
+                      no_mask: bool, faq_min: int, errors: list[str]) -> tuple[int, int, int]:
+    """知识库构建 + 训练清洗 + FAQ 草稿（main 步骤 4 与 kb-draft 子命令共用）。
+
+    返回 (知识库条目数, AI 提炼条目数, 训练集条数)。
+    """
+    kb_dir = run_dir / "knowledge"
+    kb_dir.mkdir(exist_ok=True)
+    entries, train, onboarding = build_knowledge(msgs, mask=not no_mask)
+    for e in entries:
+        (kb_dir / f"{e['filename']}.md").write_text(e["content"], encoding="utf-8")
+    ai_n = 0
+    if use_llm:
+        try:
+            ai_kb = ai_build_knowledge(entries)
+        except Exception as e:
+            ai_kb = {}
+            print(f"  [LLM 知识库失败，降级规则版] {e}")
+        for fn, md in ai_kb.items():
+            (kb_dir / f"{fn}.md").write_text(md, encoding="utf-8")
+        ai_n = len(ai_kb)
+    (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
+    (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
+    # 训练样本级清洗（P1-15）：去重 / 低质过滤 / 红线词过滤 → training_clean.jsonl
+    try:
+        clean_rows, clean_report = clean_training(train, rules)
+        if clean_rows:
+            (kb_dir / "training_clean.jsonl").write_text(
+                "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
+        write_csv(kb_dir / "training_clean_report.csv", clean_report)
+    except Exception as e:
+        errors.append(f"训练集清洗失败: {e}")
+        print(f"[错误] 训练集清洗失败：{e}")
+    # FAQ 草稿（P2-20）：高频已解决问答 → Direct Answer/Details/Related + 搜索词表
+    try:
+        draft_md, terms = faq_draft(entries, faq_min)
+        (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
+        write_csv(kb_dir / "faq_search_terms.csv", terms)
+    except Exception as e:
+        errors.append(f"FAQ 草稿失败: {e}")
+        print(f"[错误] FAQ 草稿失败：{e}")
+    n_train = len([l for l in train.splitlines() if l])
+    return len(entries), ai_n, n_train
+
+
 def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
     """每个话题条目调 LLM 提炼 FAQ（输入与输出均已脱敏）；失败条目跳过，返回 {filename: markdown}。"""
     out: dict[str, str] = {}
@@ -2273,6 +2346,19 @@ def main():
 
     rules = load_rules(args.rules_file)
 
+    if args.task == "kb-draft":
+        # kb-draft：只跑知识库 + FAQ 草稿（人工复核后入库），不跑统计/日报/考核等
+        try:
+            _cfg_kbd = load_config()
+            faq_min_k = int(_cfg_kbd.get("faq", {}).get("min_freq", 2) if isinstance(_cfg_kbd, dict) else 2)
+            _build_kb_section(run_dir, msgs, rules, use_llm, args.no_mask, faq_min_k, errors)
+            print(f"\nkb-draft 完成：知识库 + FAQ 草稿 → {run_dir / 'knowledge'}")
+        except Exception as e:
+            errors.append(f"kb-draft 失败: {e}")
+            print(f"[错误] kb-draft 失败：{e}")
+            sys.exit(1)
+        return
+
     # 1. 有效回复统计
     stats = effective_stats(msgs)
     write_csv(run_dir / "effective_stats.csv", stats)
@@ -2344,7 +2430,11 @@ def main():
         fups.append({"group": p["group"], "content": p["content"], "assignee": "",
                      "due": "", "source": p["who"], "time": p["time"], "type": "承诺待兑现"})
     if use_llm:
-        leads = ai_extract_leads(msgs)
+        try:
+            leads = ai_extract_leads(msgs)
+        except Exception as e:
+            leads = []
+            print(f"  [LLM 商机线索失败，跳过] {e}")
         for l in leads:
             fups.append({"group": l.get("group", ""), "content": l["content"], "assignee": "",
                          "due": "", "source": l.get("who", ""), "time": l.get("time", ""),
@@ -2367,50 +2457,16 @@ def main():
     n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
     print(f"[3/3] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
 
-    # 4. 知识库（清洗脱敏）
-    kb_dir = run_dir / "knowledge"
-    kb_dir.mkdir(exist_ok=True)
-    entries, train, onboarding = build_knowledge(msgs, mask=not args.no_mask)
-    for e in entries:
-        (kb_dir / f"{e['filename']}.md").write_text(e["content"], encoding="utf-8")
-    ai_n = 0
-    if use_llm:
-        try:
-            ai_kb = ai_build_knowledge(entries)
-        except Exception as e:
-            ai_kb = {}
-            print(f"  [LLM 知识库失败，降级规则版] {e}")
-        for fn, md in ai_kb.items():
-            (kb_dir / f"{fn}.md").write_text(md, encoding="utf-8")
-        ai_n = len(ai_kb)
-    (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
-    (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
-    # 训练样本级清洗（P1-15）：去重 / 低质过滤 / 红线词过滤 → training_clean.jsonl
+    # 4. 知识库（清洗脱敏）+ kb-draft 子命令共用 _build_kb_section
     try:
-        clean_rows, clean_report = clean_training(train, rules)
-        if clean_rows:
-            (kb_dir / "training_clean.jsonl").write_text(
-                "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
-        write_csv(kb_dir / "training_clean_report.csv", clean_report)
-        print(f"[4/4] 训练集清洗 → training_clean.jsonl（保留 {len(clean_rows)}/{len([l for l in train.splitlines() if l])} 条）")
+        _cfg4 = load_config()
+        faq_min = int(_cfg4.get("faq", {}).get("min_freq", 2) if isinstance(_cfg4, dict) else 2)
+        n_entries, ai_n, n_train = _build_kb_section(run_dir, msgs, rules, use_llm, args.no_mask, faq_min, errors)
+        print(f"[5/5] FAQ 草稿 → {run_dir / 'knowledge' / 'faq_drafts.md'}")
+        print(f"[6/6] 知识库（清洗+脱敏）→ {run_dir / 'knowledge'}/（{n_entries} 条话题，训练集 {n_train} 条，AI 提炼 {ai_n} 个条目）")
     except Exception as e:
-        errors.append(f"训练集清洗失败: {e}")
-        print(f"[错误] 训练集清洗失败：{e}")
-    # FAQ 草稿（P2-20）：高频已解决问答 → Direct Answer/Details/Related + 搜索词表
-    try:
-        _cfg20 = load_config()
-        faq_min = int((_cfg20.get("faq", {}).get("min_freq", 2)) if isinstance(_cfg20, dict) else 2)
-        draft_md, terms = faq_draft(entries, faq_min)
-        (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
-        write_csv(kb_dir / "faq_search_terms.csv", terms)
-        print(f"[5/5] FAQ 草稿 → faq_drafts.md（{len(terms)} 个话题，人工复核后入库）")
-    except Exception as e:
-        errors.append(f"FAQ 草稿失败: {e}")
-        print(f"[错误] FAQ 草稿失败：{e}")
-    if args.task == "kb-draft":
-        print(f"\nkb-draft 完成：FAQ 草稿 → {kb_dir.resolve()}")
-        return
-    print(f"[6/6] 知识库（清洗+脱敏）→ {kb_dir}/（{len(entries)} 条话题，训练集 {len([l for l in train.splitlines() if l])} 条，AI 提炼 {ai_n} 个条目）")
+        errors.append(f"知识库构建失败: {e}")
+        print(f"[错误] 知识库构建失败：{e}")
 
     # 5. 绩效考核（方案在 config.json assessment 段配置，命令行可临时覆盖）
     #    （results/unanswered 已在步骤 3 前计算）+ 证据化考核说明（P0-4）

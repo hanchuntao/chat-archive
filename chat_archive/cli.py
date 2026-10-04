@@ -178,6 +178,19 @@ def cmd_info(args) -> int:
     return 0
 
 
+def cmd_backup(args) -> int:
+    """备份 SQLite 主库（sqlite3 online backup API），支持任意目标路径。"""
+    import sqlite3
+    src = Database(args.db)
+    dest_path = Path(args.output)
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(str(dest_path)) as dst:
+        src.conn.backup(dst)
+    src.close()
+    print(f"数据库已备份: {dest_path}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="chat-archive",
@@ -185,13 +198,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--db", default="chat_archive.db", help="SQLite 数据库路径(默认 chat_archive.db)")
     p.add_argument("--json", action="store_true", help="JSON 输出(便于 skill/脚本调用)")
+    p.add_argument("--version", action="version", version=f"chat-archive {__version__}")
     sub = p.add_subparsers(dest="cmd")
 
     sp = sub.add_parser("init", help="初始化数据库")
     sp.set_defaults(fn=cmd_init)
 
-    sp = sub.add_parser("import", help="导入群聊 JSON 导出文件(清洗+脱敏+入库)")
-    sp.add_argument("input", nargs="+", help="导出的 JSON 文件路径")
+    sp = sub.add_parser("import", help="导入群聊导出文件(清洗+脱敏+入库)。支持 .json/.jsonl（工具导出）与 .txt/.md/.csv（明文聊天记录）")
+    sp.add_argument("input", nargs="+", help="导出的文件路径（支持 .json/.jsonl/.txt/.md/.csv）")
     sp.add_argument("--chat", help="指定 chat_id(默认从文件/内容推断)")
     sp.add_argument("--keep-noise", action="store_true", help="不过滤无意义消息")
     sp.add_argument("--mask-all", action="store_true", help="输入后全链路脱敏(内部管理场景)")
@@ -222,10 +236,11 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("--chat", help="限定会话")
     sp.add_argument("--start", help="起始时间")
     sp.add_argument("--end", help="结束时间")
+    sp.add_argument("--title", help="周报标题（默认最近 7 天）")
     sp.add_argument("--llm", action="store_true", help="强制 AI 提炼")
+    sp.add_argument("--no-llm", dest="llm", action="store_false", help="强制规则模式")
     sp.add_argument("-o", "--output", help="输出文件路径")
-    sp.set_defaults(fn=cmd_report, llm=None)
-    sp.set_defaults(fn=cmd_report, llm=None)
+    sp.set_defaults(fn=cmd_report)
     sp = sub.add_parser("weekly", help="同 report：生成 Markdown 周报/FAQ（数据层），语义更明确）")
     sp.add_argument("--chat", help="限定会话")
     sp.add_argument("--start", help="起始时间")
@@ -234,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("-o", "--output", help="输出 Markdown 文件路径(默认打印到 stdout)")
     sp.add_argument("--llm", action="store_true", help="强制使用 LLM 提炼")
     sp.add_argument("--no-llm", dest="llm", action="store_false", help="强制规则模式")
-    sp.set_defaults(fn=cmd_report, llm=None)
+    sp.set_defaults(fn=cmd_report)
 
     sp = sub.add_parser("vectorize", help="(可选)灌入本地 Chroma 向量库")
     sp.add_argument("--chat", help="限定会话")
@@ -244,6 +259,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sp = sub.add_parser("info", help="数据库概览")
     sp.set_defaults(fn=cmd_info)
+
+    sp = sub.add_parser("backup", help="备份 SQLite 主库到指定路径")
+    sp.add_argument("output", help="备份文件路径（如 backup/chat_archive_2026.db）")
+    sp.set_defaults(fn=cmd_backup)
 
     args = p.parse_args(argv)
     if not getattr(args, "cmd", None):

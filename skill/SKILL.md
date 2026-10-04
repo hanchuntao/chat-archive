@@ -26,6 +26,8 @@ CLI=<仓库根>/chat-archive.py
 python3 "$CLI" --db <输出目录>/archive.db import <输入文件或目录> --audit
 python3 "$CLI" --db <输出目录>/archive.db search "关键词" --json
 python3 "$CLI" --db <输出目录>/archive.db report --start YYYY-MM-DD --end YYYY-MM-DD -o 周报.md
+python3 "$CLI" --db <输出目录>/archive.db backup <备份文件.db>   # SQLite 热备
+python3 "$CLI" --version                                          # 版本号
 ```
 
 4. **业务层（核心，必跑）**：

@@ -1,6 +1,7 @@
 """入库管道: 解析 → 清洗 → 脱敏 → 写入 SQLite+FTS5。
 
 顺序固定: 清洗 → 脱敏 → 入库。脱敏必须在入库之前, 库中只存干净数据。
+支持输入格式: .json/.jsonl（工具导出结构化）、.txt/.md/.csv（明文聊天记录）。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from pathlib import Path
 
 from ..db import Database
 from ..importers.wechat_json import parse_json
+from ..importers.plain import parse_plain
 from .clean import clean_message
 from .desensitize import Desensitizer, DesensitizeResult
 
@@ -25,10 +27,20 @@ class IngestStats:
     audit: list[dict] = field(default_factory=list)  # 审计条目
 
 
+_SUPPORTED_EXTS = {".json", ".jsonl", ".txt", ".md", ".csv", ".markdown"}
+
+
 def ingest_file(db: Database, path: str | Path, chat_id: str | None = None,
                 mask_all: bool = False, drop_noise: bool = True) -> IngestStats:
     """导入单个导出文件。mask_all=True 时全链路脱敏; 默认脱敏规则同样生效。"""
-    messages, cid = parse_json(path, chat_id)
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext not in _SUPPORTED_EXTS:
+        raise ValueError(f"不支持的输入格式: {ext or '(无扩展名)'}（支持 .json/.jsonl/.txt/.md/.csv）")
+    if ext in (".json", ".jsonl"):
+        messages, cid = parse_json(p, chat_id)
+    else:
+        messages, cid = parse_plain(p, chat_id)
     des = Desensitizer()
     stats = IngestStats(total=len(messages))
 

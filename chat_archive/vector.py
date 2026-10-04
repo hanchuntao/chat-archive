@@ -32,7 +32,7 @@ def vectorize(db: Database, *, chat_id: str | None = None,
     col = client.get_or_create_collection(collection)
 
     docs = [
-        (r["msg_id"], (r["content"] or "")[_EMBED_MSG_TAKE],
+        (r["msg_id"], (r["content"] or "")[:_EMBED_MSG_TAKE],
          {"sender": r["sender"] or "", "time": r["time"] or "", "type": r["type"] or ""})
         for r in rows if (r["content"] or "").strip()
     ]

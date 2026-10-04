@@ -30,6 +30,8 @@ def _read_csv(path: Path) -> list[dict]:
 
 def _parse_daily(path: Path) -> dict:
     """daily_reports/<员工>_<日期>.md -> {员工, 日期, 要点:[(时间, 内容)]}"""
+    if not path.exists():
+        return {"name": path.stem, "date": "", "items": []}
     txt = path.read_text(encoding="utf-8", errors="ignore")
     m = re.match(r"#\s*(.+?)\s*工作日报（(.+?)）", txt)
     name, date = (m.group(1).strip(), m.group(2).strip()) if m else (path.stem, "")
@@ -47,6 +49,8 @@ def _parse_daily(path: Path) -> dict:
 
 def _parse_discussion(path: Path) -> list[dict]:
     """discussion_summary.md -> [{topic, rows:[(时间, 发送人, 内容)]}]"""
+    if not path.exists():
+        return []
     txt = path.read_text(encoding="utf-8", errors="ignore")
     out, cur = [], None
     for line in txt.splitlines():

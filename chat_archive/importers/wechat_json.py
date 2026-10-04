@@ -72,13 +72,14 @@ def _parse_time(value: Any) -> str | None:
         return None
     for fmt in (
         "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d",
+        "%Y/%m/%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d",
     ):
         try:
             return datetime.strptime(s, fmt).strftime("%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-    return s  # 无法解析则保留原文, 由上层决定
+    # 无法解析 → None（由调用方决定保留/丢弃；避免脏字符串污染日期聚合统计）
+    return None
 
 
 def _normalize_type(value: Any) -> str:

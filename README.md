@@ -8,6 +8,8 @@ Markdown 周报/FAQ 生成，可选用 LLM 提炼与本地 Chroma 语义检索�
 
 数据全程本地处理，不上传任何第三方云端。
 
+> 📖 **完整用户手册**（Windows / Mac / 手机备份，从"导出明文"到"一键整理"分步图解，新手照着做即可）：[docs/用户手册.md](docs/用户手册.md)
+
 ## 5 分钟上手（先看这个）
 
 把群聊记录变成「有效回复统计 / 员工日报 / 讨论要点 / 待跟进 / 知识库 / 考核评分」六类结果，外加一个网页看板。
@@ -130,6 +132,14 @@ chat-archive info
 python3 -m pytest tests/ -q
 ```
 
+## 质量与测试
+
+- **测试**：254 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支）。
+- **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%。
+- **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
+- **规范文档**：`specs/architecture.md`（模块职责与主流软件对齐）、`specs/data-model.md`（SQLite 表结构与 FTS5）、`specs/privacy.md`（脱敏/合规红线）、`specs/testing.md`（测试策略与覆盖率口径）。
+- **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
+
 ## 项目结构（使用者视角）
 
 | 类型 | 目录/文件 | 说明 |
@@ -196,7 +206,9 @@ chat-archive
 
 **TXT / Markdown**：每行 `时间 发送人: 内容`（如 `2026-09-28 10:00 张三: 今天发货吗`）；支持 QQ 两行式（`时间 发送人(QQ号)` + 下一行内容）；`==群名==`/`【群名】` 行作为群分隔头。
 
-**编码自动识别**：按 UTF-8 → GB18030 → GBK 依次尝试（Windows 微信导出的 GBK 文件直接可用，无需手动转码）。
+**CSV**：自动列探测（`msg_id/id`、`sender_name/发送人/昵称/name`、`content` 列名识别）；QQ 消息管理器导出的"时间 发送人(QQ号)+下一行内容"两行式同样支持。
+
+**编码自动识别**：按 UTF-8 → GB18030 → GBK 依次尝试（Windows 微信导出的 GBK 文件直接可用，无需手动转码）。解析器实现在 `chat_archive/importers/plain.py`（TXT/MD/CSV）与 `wechat_json.py`（JSON/JSONL），`ingest.py` 按扩展名自动路由。
 
 ## CLI 一览
 
@@ -207,9 +219,11 @@ chat-archive
 | `import <file...>` | 导入（清洗+脱敏+入库，幂等可重跑），`--audit` 看脱敏审计 |
 | `search <关键词>` | FTS5 全文检索；`--from/--to/--sender/--type/--limit` |
 | `stats` | 聚合统计：`--group sender/day/type/category`，`--keywords` 频次 |
-| `report` | 生成 Markdown 周报/FAQ；`--llm` 强制 AI 提炼 |
+| `report` | 生成 Markdown 周报/FAQ；`--title` 自定义标题、`--no-llm` 强制规则模式、`--llm` 强制 AI 提炼 |
 | `vectorize` | （可选）灌入本地 Chroma 语义检索 |
 | `info` | 数据库概览（会话/消息数/时间范围） |
+| `backup <文件>` | SQLite online backup（热备，可增量备份到任意路径） |
+| `--version`（全局） | 打印版本号后退出 |
 
 所有命令支持 `--json` 输出，便于 skill / 脚本调用。
 
