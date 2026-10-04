@@ -95,22 +95,24 @@ def test_chat_completion_ok(monkeypatch):
     payload = json.dumps({"choices": [{"message": {"content": " 结果 "}}]}).encode()
     fake = _FakeResp(payload)
 
-    def _fake_open(req, timeout=120):
-        assert req.get_header("Authorization") == "Bearer k"
-        assert b"temperature" in req.data
-        return fake
+    class _FakeOpener:
+        def open(self, req, timeout=120):
+            assert req.get_header("Authorization") == "Bearer k"
+            assert b"temperature" in req.data
+            return fake
 
-    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", _fake_open)
+    monkeypatch.setattr(llm_mod.urllib.request, "build_opener", lambda *a: _FakeOpener())
     assert llm_mod.chat_completion("s", "u", timeout=5) == "结果"
 
 
 def test_chat_completion_http_error(monkeypatch):
     monkeypatch.setenv("CHAT_ARCHIVE_LLM_API_KEY", "k")
 
-    def _raise(req, timeout=120):
-        raise urllib.error.HTTPError("u", 429, "rate", None, None)
+    class _FakeOpener:
+        def open(self, req, timeout=120):
+            raise urllib.error.HTTPError("u", 429, "rate", None, None)
 
-    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", _raise)
+    monkeypatch.setattr(llm_mod.urllib.request, "build_opener", lambda *a: _FakeOpener())
     with pytest.raises(RuntimeError, match="429"):
         llm_mod.chat_completion("s", "u")
 
@@ -118,10 +120,11 @@ def test_chat_completion_http_error(monkeypatch):
 def test_chat_completion_urlerror(monkeypatch):
     monkeypatch.setenv("CHAT_ARCHIVE_LLM_API_KEY", "k")
 
-    def _raise(req, timeout=120):
-        raise urllib.error.URLError("net down")
+    class _FakeOpener:
+        def open(self, req, timeout=120):
+            raise urllib.error.URLError("net down")
 
-    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", _raise)
+    monkeypatch.setattr(llm_mod.urllib.request, "build_opener", lambda *a: _FakeOpener())
     with pytest.raises(RuntimeError, match="net down"):
         llm_mod.chat_completion("s", "u")
 
@@ -129,7 +132,8 @@ def test_chat_completion_urlerror(monkeypatch):
 def test_chat_completion_bad_structure(monkeypatch):
     monkeypatch.setenv("CHAT_ARCHIVE_LLM_API_KEY", "k")
     fake = _FakeResp(json.dumps({"choices": []}).encode())
-    monkeypatch.setattr(llm_mod.urllib.request, "urlopen", lambda req, timeout=120: fake)
+    monkeypatch.setattr(llm_mod.urllib.request, "build_opener",
+                        lambda *a: type("O", (), {"open": lambda self, req, timeout=120: fake})())
     with pytest.raises(RuntimeError, match="结构异常"):
         llm_mod.chat_completion("s", "u")
 

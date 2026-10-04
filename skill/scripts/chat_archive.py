@@ -3117,6 +3117,7 @@ def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_ll
 def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
     """每个话题条目调 LLM 提炼 FAQ（输入与输出均已脱敏）；失败条目跳过，返回 {filename: markdown}。"""
     out: dict[str, str] = {}
+    fails = 0
     for e in entries:
         qas = "\n".join(f"- 问：{mask_pii(qa['q'])}\n  答：{mask_pii(qa['a'])}" for qa in e["qa"][:30])
         if not qas:
@@ -3130,8 +3131,11 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
             md = chat_completion(_LLM_SYSTEM, user, timeout=90)
         except Exception:
             md = ""
+            fails += 1
         if md:
             out[e["filename"]] = f"# {e['title']}\n\n> 由 LLM 基于群聊经验提炼（已脱敏）\n\n{md}\n"
+    if fails:
+        print(f"  [LLM 知识库] {fails}/{len(entries)} 个话题提炼失败，已跳过（规则版条目保留）")
     return out
 
 

@@ -65,8 +65,13 @@ def chat_completion(system: str, user: str, *, timeout: int = 120) -> str:
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         method="POST",
     )
+    # 本地 LLM（ollama/vLLM/测试 mock）绕过 http_proxy 环境代理，避免 127.0.0.1 被代理劫持
+    is_local = base.startswith(("http://127.", "http://localhost", "http://[::1]"))
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}) if is_local else urllib.request.ProxyHandler()
+    )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=timeout) as resp:
             data: dict[str, Any] = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"LLM HTTP {e.code}: {e.read()[:200].decode('utf-8', 'ignore')}") from e
