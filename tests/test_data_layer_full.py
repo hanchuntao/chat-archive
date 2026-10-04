@@ -646,3 +646,12 @@ def test_ingest_mask_all(db: Database):
     assert st.masked_msg >= 3
     masked_rows = db.conn.execute("SELECT COUNT(*) FROM messages WHERE masked=1").fetchone()[0]
     assert masked_rows >= 3
+
+
+def test_db_pragma_hardening(tmp_path):
+    """P0-7 SQLite PRAGMA 加固：busy_timeout / cache_size / wal_autocheckpoint 生效。"""
+    d = Database(tmp_path / "pragma.db")
+    assert d.conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    assert d.conn.execute("PRAGMA cache_size").fetchone()[0] == -64000
+    assert d.conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+    assert d.conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"

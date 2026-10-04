@@ -87,6 +87,9 @@ class Database:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")          # 并发写锁最多等待 5s
+        self.conn.execute("PRAGMA cache_size=-64000")         # 页缓存 64MB（负值=KiB）
+        self.conn.execute("PRAGMA wal_autocheckpoint=1000")   # WAL 每 1000 页自动 checkpoint
         self._check_fts5()
         self.init()
 

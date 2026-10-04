@@ -185,6 +185,7 @@ def cmd_backup(args) -> int:
     dest_path = Path(args.output)
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(str(dest_path)) as dst:
+        dst.execute("PRAGMA busy_timeout=5000")
         src.conn.backup(dst)
     src.close()
     print(f"数据库已备份: {dest_path}")
