@@ -15,6 +15,7 @@ import argparse
 import csv
 import io
 import json
+import shutil
 import re
 from datetime import datetime
 from html import escape
@@ -232,11 +233,50 @@ footer{text-align:center;color:var(--sub);font-size:12px;margin-top:24px}
 @media (max-width:760px){.two-col{grid-template-columns:1fr}.pending-grid{grid-template-columns:1fr}.tl-txt{max-width:100%}}
 
 
+/* ---- P0-1/2/3 交互层样式 ---- */
+section.ca-sec{scroll-margin-top:64px}
+section.ca-sec.flash{outline:2px solid #e8b339;outline-offset:-2px}
+.ca-nav{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:4px 18px;
+  background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);
+  padding:8px 20px;margin:0 0 16px;backdrop-filter:blur(4px)}
+.ca-group{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.ca-group b{font-size:11px;color:var(--teal);font-weight:700}
+.ca-group a{font-size:12px;color:var(--ink);text-decoration:none;cursor:pointer;white-space:nowrap}
+.ca-group a:hover{color:var(--teal);text-decoration:underline}
+.ca-search{padding:0 2px 14px;max-width:1080px;margin:0 auto}
+.ca-search input{width:100%;max-width:420px;padding:8px 12px;border:1px solid var(--line);
+  border-radius:8px;font-size:13px;font-family:inherit;background:var(--paper)}
+.ca-search input:focus{outline:2px solid var(--teal-soft);border-color:var(--teal)}
+.ca-search .num{font-size:12px;color:var(--sub);margin-left:8px}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.chart-card{background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.chart-card h4{margin:0 0 8px;font-size:13px;color:var(--sub);font-weight:600}
+.chart-card:nth-child(3){grid-column:1/-1}
+.tl-wrap{display:grid;grid-template-columns:240px 1fr;gap:16px}
+.tl-side{position:sticky;top:64px;align-self:start;max-height:70vh;overflow:auto;
+  background:var(--paper);border:1px solid var(--line);border-radius:8px;padding:12px}
+.tl-search input{width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:6px;font-size:12px;font-family:inherit}
+.tl-mems{margin-top:10px;display:flex;flex-direction:column;gap:2px}
+.tl-mem{font-size:12px;display:flex;gap:6px;align-items:center;cursor:pointer;padding:2px 4px;border-radius:4px}
+.tl-mem:hover{background:var(--teal-soft)}
+.tl-main{min-width:0}
+.tl-day{margin-bottom:14px}
+.tl-head{font-size:14px;font-weight:700;margin:0 0 6px;padding:6px 10px;background:var(--teal-soft);
+  border-radius:6px;color:var(--teal)}
+.tl-msg{display:flex;gap:8px;padding:5px 8px;border-bottom:1px dashed var(--line);font-size:13px;align-items:baseline}
+.tl-msg:hover{background:#fafbfc}
+.tl-t{font-size:11px;color:var(--sub);font-variant-numeric:tabular-nums;flex:none}
+.tl-s{font-weight:600;flex:none;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tl-c{color:#374151;min-width:0;word-break:break-word}
 @media (max-width:760px){
   .stat-strip{grid-template-columns:repeat(2,1fr)}
   .wrap{padding:16px 10px 48px}
   section{padding:18px 16px}
   th:nth-child(5){display:none}
+  .chart-grid{grid-template-columns:1fr}
+  .chart-card:nth-child(3){grid-column:auto}
+  .tl-wrap{grid-template-columns:1fr}
+  .tl-side{position:static;max-height:none}
 }
 """
 
@@ -248,7 +288,7 @@ def _stat_card(n: int, k: str, hot: bool = False) -> str:
 
 def _section(no: str, title: str, body: str, note: str = "") -> str:
     note_html = f'<span class="sec-note">{escape(note)}</span>' if note else ""
-    return (f'<section><div class="sec-head"><span class="sec-no">{no}</span>'
+    return (f'<section id="sec-{no}" class="ca-sec"><div class="sec-head"><span class="sec-no">{no}</span>'
             f'<h2 class="sec-title">{escape(title)}</h2>{note_html}</div>{body}</section>')
 
 
@@ -927,7 +967,80 @@ def _render_voice_media(voice: list[dict], media: list[dict]) -> str:
     return "<br>".join(out) if out else ""
 
 
+def _sender_type_matrix(msg_rows: list[dict], top_n: int = 8) -> list[dict]:
+    """发送者 × 消息类型计数矩阵（供桑基图）。"""
+    from collections import Counter
+    pairs: Counter = Counter()
+    for r in msg_rows:
+        s = (r.get("sender") or "未知").strip() or "未知"
+        t = r.get("msg_type") or r.get("type") or "text"
+        pairs[(s, t)] += 1
+    by_sender: Counter = Counter()
+    for (s, _t), n in pairs.items():
+        by_sender[s] += n
+    top = {s for s, _ in by_sender.most_common(top_n)}
+    rows = []
+    for (s, t), n in pairs.items():
+        rows.append({"sender": s if s in top else "其他", "type": t, "count": n})
+    return rows
+
+
+def _render_echarts(daily: list[dict], types: list[dict], inter: list[dict],
+                    s_t: list[dict], members: list[dict]) -> str:
+    """P0-2 交互图表看板（ECharts 三件套：日历热图 / 桑基图 / 互动网络）。"""
+    return ('<div class="chart-grid" id="ca-charts">'
+            '<div class="chart-card"><h4>每日消息量 · 日历热图</h4><div id="ch-cal" style="height:260px"></div></div>'
+            '<div class="chart-card"><h4>发送者 × 消息类型 · 桑基图</h4><div id="ch-sankey" style="height:280px"></div></div>'
+            '<div class="chart-card"><h4>成员互动网络 · 关系图</h4><div id="ch-graph" style="height:320px"></div></div>'
+            "</div>"
+            '<p class="tag">图表由 Apache ECharts 渲染（内嵌随包分发）；本地打开无网络依赖。数据为清洗脱敏后的统计口径。</p>')
+
+
+def _render_replay(msg_rows: list[dict]) -> str:
+    """P0-3 消息回放时间线：按日分组 + 成员过滤侧栏 + 搜索高亮。"""
+    if not msg_rows:
+        return '<p class="tag">（无消息明细，messages.csv 缺失）</p>'
+    days: dict = {}
+    senders: dict = {}
+    for r in msg_rows:
+        d = (r.get("sent_at") or "")[:10]
+        days.setdefault(d, []).append(r)
+        s = (r.get("sender") or "未知").strip() or "未知"
+        senders[s] = senders.get(s, 0) + 1
+    order = sorted(days)
+    side = "".join(
+        "<label class='tl-mem'><input type='checkbox' value='{k}' checked>{k} <span class='num'>{v}</span></label>"
+        .format(k=escape(k), v=v)
+        for k, v in sorted(senders.items(), key=lambda kv: -kv[1]))
+    body = ""
+    for d in order:
+        lis = "".join(
+            "<div class='tl-msg' data-sender='{s}' data-text='{t}'>"
+            "<span class='tl-t'>{tm}</span><span class='tl-s'>{s}</span><span class='tl-c'>{c}</span></div>"
+            .format(s=escape(r.get("sender", "") or "未知"),
+                    t=escape((r.get("content") or "")[:200]),
+                    tm=escape((r.get("sent_at") or "")[11:16]),
+                    c=escape(r.get("content") or ""))
+            for r in days[d])
+        body += ("<div class='tl-day' data-day='{d}'><h4 class='tl-head'>{d} · {n} 条</h4>{lis}</div>"
+                 .format(d=escape(d), n=len(days[d]), lis=lis))
+    return ('<div class="tl-wrap"><aside class="tl-side">'
+            '<div class="tl-search"><input id="tl-q" type="text" placeholder="搜索消息内容…"></div>'
+            '<div class="tl-mems">' + side + "</div></aside>"
+            '<div class="tl-main" id="tl-main">' + body + "</div></div>")
+
+
+
+
+_INTERACTIVE_JS = '// chat-archive report 交互层（P0-1：Tab 导航 / 全局搜索 / 表格排序；P0-2：ECharts 三件套；P0-3：消息回放过滤）\n(function () {\n  var NAV = [\n    ["经营", "01 有效回复统计", "02 员工工作日报", "03 讨论要点", "04 丢单商机风险", "05 待跟进事项"],\n    ["团队", "06 群活跃度", "07 知识库沉淀", "08 AI监督绩效考核"],\n    ["客户", "09 需求洞察", "10 客服质检信号", "11 待回复挂起队列", "12 SLA分诊", "13 丢单健康分", "14 SOP合规审计"],\n    ["洞察", "15 销售漏斗", "16 会话时间线", "17 @提及与消息明细", "18 年度分析与成员档案", "19 消息类型与互动网络"],\n    ["图表", "20 交互图表看板"],\n    ["回放", "21 消息回放时间线"]\n  ];\n  var nav = document.createElement("nav");\n  nav.className = "ca-nav";\n  NAV.forEach(function (g) {\n    var span = document.createElement("span");\n    span.className = "ca-group";\n    var lab = document.createElement("b");\n    lab.textContent = g[0];\n    span.appendChild(lab);\n    g.slice(1).forEach(function (t) {\n      var a = document.createElement("a");\n      a.textContent = t;\n      a.onclick = function (e) {\n        e.preventDefault();\n        var s = document.getElementById("sec-" + t.slice(0, 2));\n        if (s) {\n          s.scrollIntoView({ behavior: "smooth", block: "start" });\n          s.classList.add("flash");\n          setTimeout(function () { s.classList.remove("flash"); }, 1200);\n        }\n      };\n      span.appendChild(a);\n    });\n    nav.appendChild(span);\n  });\n  document.body.insertBefore(nav, document.body.firstChild);\n\n  var sh = document.createElement("div");\n  sh.className = "ca-search";\n  sh.innerHTML = \'<input id="ca-q" type="text" placeholder="搜索全部模块（关键词 / 人名 / 群名）…"><span id="ca-qc" class="num"></span>\';\n  var head = document.querySelector(".masthead");\n  if (head) { head.parentNode.insertBefore(sh, head.nextSibling); } else { document.body.appendChild(sh); }\n  var q = document.getElementById("ca-q"), qc = document.getElementById("ca-qc");\n  q.addEventListener("input", function () {\n    var k = q.value.trim().toLowerCase(), n = 0;\n    document.querySelectorAll("section.ca-sec").forEach(function (s) {\n      var hit = s.textContent.toLowerCase().indexOf(k) > -1;\n      s.style.borderColor = hit ? "#e8b339" : "transparent";\n      if (hit) { n++; s.scrollIntoView({ block: "nearest" }); }\n    });\n    qc.textContent = k ? ("命中 " + n + " 个模块") : "";\n  });\n\n  document.querySelectorAll("table th").forEach(function (th) {\n    th.style.cursor = "pointer";\n    th.title = "点击排序";\n    th.addEventListener("click", function () {\n      var tb = th.closest("table").querySelector("tbody");\n      if (!tb) { return; }\n      var rows = Array.prototype.slice.call(tb.rows);\n      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);\n      var asc = th.dataset.asc !== "1";\n      rows.sort(function (a, b) {\n        var x = a.cells[idx] ? a.cells[idx].textContent.trim() : "";\n        var y = b.cells[idx] ? b.cells[idx].textContent.trim() : "";\n        var nx = parseFloat(x), ny = parseFloat(y);\n        var r = (isNaN(nx) || isNaN(ny)) ? x.localeCompare(y, "zh") : nx - ny;\n        return asc ? r : -r;\n      });\n      rows.forEach(function (r) { tb.appendChild(r); });\n      th.dataset.asc = asc ? "1" : "0";\n    });\n  });\n\n  var data = null;\n  var cd = document.getElementById("ca-data");\n  if (cd) {\n    try { data = JSON.parse(cd.textContent); } catch (e) { data = null; }\n  }\n  if (window.echarts && data) {\n    var cal = data.daily || [], st = data.sender_type || [], it = data.interactions || [];\n    var calDom = document.getElementById("ch-cal");\n    if (calDom && cal.length) {\n      var calMax = 1;\n      cal.forEach(function (x) { if ((+x.total || 0) > calMax) { calMax = +x.total; } });\n      echarts.init(calDom).setOption({\n        tooltip: {},\n        visualMap: {\n          min: 0, max: calMax, calculable: true, orient: "horizontal",\n          left: "center", bottom: 0,\n          inRange: { color: ["#f6f1ea", "#c8d6c8", "#b3c6b3", "#7da37d", "#3f6f4f"] }\n        },\n        calendar: {\n          range: cal[0].date + "|" + cal[cal.length - 1].date,\n          cellSize: ["auto", 14], dayLabel: { firstDay: 1 }, monthLabel: { nameMap: "cn" }\n        },\n        series: [{\n          type: "heatmap", coordinateSystem: "calendar",\n          data: cal.map(function (x) { return [x.date, +x.total || 0]; })\n        }]\n      });\n    }\n    var skDom = document.getElementById("ch-sankey");\n    if (skDom && st.length) {\n      var senders = [], seen = {}, types2 = [], seen2 = {};\n      st.forEach(function (r) {\n        if (!seen[r.sender]) { seen[r.sender] = 1; senders.push(r.sender); }\n        if (!seen2[r.type]) { seen2[r.type] = 1; types2.push(r.type); }\n      });\n      echarts.init(skDom).setOption({\n        series: [{\n          type: "sankey", left: 20, right: 20, top: 10, bottom: 10,\n          data: senders.map(function (s) { return { name: s }; })\n                .concat(types2.map(function (t) { return { name: t }; })),\n          links: st.map(function (r) { return { source: r.sender, target: r.type, value: +r.count || 0 }; }),\n          label: { fontSize: 11 }\n        }]\n      });\n    }\n    var grDom = document.getElementById("ch-graph");\n    if (grDom && it.length) {\n      var nodes = {}, links = [];\n      it.forEach(function (r) {\n        ["from", "to"].forEach(function (k) {\n          var nm = r[k];\n          if (nm && !nodes[nm]) { nodes[nm] = { name: nm }; }\n        });\n        links.push({ source: r.from, target: r.to, value: +r.count || 1 });\n      });\n      echarts.init(grDom).setOption({\n        tooltip: {},\n        series: [{\n          type: "graph", layout: "force", roam: true,\n          data: Object.keys(nodes).map(function (k) { return nodes[k]; }),\n          links: links, force: { repulsion: 180 },\n          label: { show: true, fontSize: 10 }, lineStyle: { opacity: 0.4 }\n        }]\n      });\n    }\n  } else if (document.getElementById("ca-charts")) {\n    document.getElementById("ca-charts").insertAdjacentHTML(\n      "afterbegin",\n      \'<p class="tag">ECharts 组件缺失（未找到 echarts.min.js），以下图表不可用；其他功能不受影响。</p>\'\n    );\n  }\n\n  var tlq = document.getElementById("tl-q");\n  if (tlq) {\n    function apply() {\n      var k = tlq.value.trim().toLowerCase();\n      document.querySelectorAll(".tl-msg").forEach(function (m) {\n        var s = m.dataset.sender;\n        var showMem = null;\n        document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n          if (cb.value === s) { showMem = cb; }\n        });\n        var okMem = !showMem || showMem.checked;\n        var okTxt = !k || (m.dataset.text || "").toLowerCase().indexOf(k) > -1;\n        m.style.display = (okMem && okTxt) ? "" : "none";\n      });\n      document.querySelectorAll(".tl-day").forEach(function (d) {\n        var vis = false;\n        d.querySelectorAll(".tl-msg").forEach(function (m) {\n          if (m.style.display !== "none") { vis = true; }\n        });\n        d.style.display = vis ? "" : "none";\n      });\n    }\n    tlq.addEventListener("input", apply);\n    document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n      cb.addEventListener("change", apply);\n    });\n    apply();\n  }\n})();\n'
+
 def render(out_dir: Path, title: str = "") -> str:
+    _ech = Path(__file__).resolve().parent / "assets" / "echarts.min.js"
+    if _ech.exists():
+        try:
+            shutil.copy(_ech, out_dir / "echarts.min.js")
+        except Exception:
+            pass
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
     assess = _read_csv(out_dir / "assessment.csv")
@@ -998,8 +1111,17 @@ def render(out_dir: Path, title: str = "") -> str:
     today = datetime.now().strftime("%Y-%m-%d %H:%M")
     t = title or "群聊工作分析报告"
 
+    s_t = _sender_type_matrix(msg_rows)
+    ca_data = {
+        "daily": daily_act, "interactions": interactions[:60],
+        "sender_type": s_t[:200], "members": members,
+        "msg_types": msg_types, "keywords": keywords[:30],
+    }
+    ca_json = json.dumps(ca_data, ensure_ascii=False).replace("</", "<\\/")
+    data_script = '<script id="ca-data" type="application/json">' + ca_json + "</script>"
+
     body = "".join([
-        '<div class="masthead"><p class="eyebrow">CHAT ARCHIVE · 群消息运营分析</p>'
+        data_script + '<div class="masthead"><p class="eyebrow">CHAT ARCHIVE · 群消息运营分析</p>'
         f"<h1>{escape(t)}</h1><p class='sub'>本地生成 · {today} · 数据已清洗脱敏，仅存本机</p>"
         '<div class="stat-strip">'
         + _stat_card(n_sent, "员工消息总数")
@@ -1029,6 +1151,8 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("17", "@提及与消息明细", _render_mentions(mentions, msg_rows), "关键对接人识别 · 扁平表透视"),
         _section("18", "年度分析与成员档案", _render_keywords(keywords) + _render_keywords_trend(kws_trend) + _render_sentiment(sentiment) + _render_members(members), "高频词 TopN · 关键词趋势 · 情感倾向 · 成员完整档案（对齐 WeChatMsg/MemoTrace）"),
         _section("19", "消息类型与互动网络", _render_message_insight(daily_act, msg_types, interactions) + _render_voice_media(voice_rows, media_rows2), "每日消息量 · 类型占比 · 回复配对 · 语音转写占位 · 媒体归档（对齐 MemoTrace / WhatsR）"),
+        _section("20", "交互图表看板", _render_echarts(daily_act, msg_types, interactions, s_t, members), "日历热图 · 桑基图 · 互动网络（Apache ECharts，本地无网络渲染）"),
+        _section("21", "消息回放时间线", _render_replay(msg_rows), "按日分组 · 成员过滤 · 搜索高亮（结论可回原文审计）"),
     ])
 
     return f"""<!DOCTYPE html>
@@ -1042,7 +1166,10 @@ def render(out_dir: Path, title: str = "") -> str:
 </head>
 <body><div class="wrap">{body}
 <footer>由 chat-archive 本地生成 · 含 PII 的消息不进入此报告</footer>
-</div></body></html>"""
+</div>
+<script src="echarts.min.js"></script>
+<script>{_INTERACTIVE_JS}</script>
+</body></html>"""
 
 
 def main():
