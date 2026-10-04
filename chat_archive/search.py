@@ -91,7 +91,7 @@ def search(db: Database, query: str, *, chat_id: str | None = None,
                 f"SELECT messages.msg_id, messages.sender, messages.time, "
                 f"messages.content, messages.type, messages.masked FROM messages "
                 f"JOIN messages_fts ON messages.rowid = messages_fts.rowid "
-                f"WHERE {fts_where_sql} ORDER BY messages.time DESC, messages.rowid DESC "
+                f"WHERE {fts_where_sql} ORDER BY bm25(messages_fts), messages.time DESC "
                 f"LIMIT ? OFFSET ?",
                 fts_params + [limit, offset],
             ).fetchall()

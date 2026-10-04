@@ -15,7 +15,7 @@ import hashlib
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 版本化迁移：MIGRATIONS[n] = 从 n-1 → n 的 SQL 语句列表。
 # 未来 schema 变更（加列/建表）在此追加新版本并写对应迁移，旧库自动升级。
@@ -77,6 +77,9 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"PRAGMA user_version = {version}")
 
 
+MIGRATIONS[2] = [
+    "ALTER TABLE messages ADD COLUMN recalled INTEGER DEFAULT 0",
+]
 SCHEMA = MIGRATIONS[SCHEMA_VERSION]
 
 
@@ -125,8 +128,8 @@ class Database:
         """返回 True 表示新插入, False 表示已存在(重复, 跳过)。"""
         cur = self.conn.execute(
             "INSERT OR IGNORE INTO messages(msg_id, chat_id, sender, time, content, "
-            "type, category, tags, raw_hash, masked) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "type, category, tags, raw_hash, masked, recalled) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 m["msg_id"],
                 m["chat_id"],
@@ -138,6 +141,7 @@ class Database:
                 m.get("tags"),
                 m.get("raw_hash"),
                 1 if m.get("masked") else 0,
+                1 if m.get("recalled") else 0,
             ),
         )
         return cur.rowcount > 0
@@ -155,6 +159,7 @@ class Database:
 
     def rebuild_fts(self) -> None:
         self.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('rebuild')")
+        self.conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('optimize')")
 
     def commit(self) -> None:
         self.conn.commit()

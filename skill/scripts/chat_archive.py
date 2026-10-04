@@ -853,6 +853,40 @@ LOWINFO_NAME_RE = re.compile(
     r"[\W_]{1,8}|[^\u4e00-\u9fa5A-Za-z0-9]{1,8})$", re.I)
 LOWINFO_WORDS = {"nil", "null", "test", "admin", "user", "undefined", "unknown", "微信", "weixin"}
 
+def customer_profiles(msgs: list[dict], unanswered: list[dict]) -> list[dict]:
+    """P1-7 客户画像聚合：非员工发送人 → 消息/有效/提问/话题/最后发言/待回复（SOP 提醒依据）。"""
+    pend_ids = {m["msg_id"] for m in unanswered}
+    rows: dict[str, dict] = OrderedDict()
+    for m in msgs:
+        if m["is_staff"]:
+            continue
+        r = rows.setdefault(m["sender"], {"customer": m["sender"], "messages": 0, "effective": 0,
+                                          "questions": 0, "topic_count": 0, "topics": set(),
+                                          "last_time": "", "_last_dt": None, "pending_reply": "no"})
+        r["messages"] += 1
+        if classify(m["content"]) == "substantive":
+            r["effective"] += 1
+        if is_question(m["content"]):
+            r["questions"] += 1
+        t = match_topic(m["content"])
+        if t:
+            r["topics"].add(t)
+        ts = m["sent_at"]
+        if isinstance(ts, datetime) and (r["_last_dt"] is None or ts > r["_last_dt"]):
+            r["_last_dt"] = ts
+        if m["msg_id"] in pend_ids:
+            r["pending_reply"] = "yes"
+    out = []
+    for r in rows.values():
+        r["topic_count"] = len(r["topics"])
+        r["topics"] = "、".join(sorted(r["topics"])[:8])
+        r["last_time"] = r["_last_dt"].strftime("%Y-%m-%d %H:%M") if r.get("_last_dt") else ""
+        r.pop("_last_dt", None)
+        out.append(r)
+    out.sort(key=lambda x: (0 if x["pending_reply"] == "yes" else 1, -x["messages"]))
+    return out
+
+
 
 def is_lowinfo_name(s: str) -> bool:
     s = (s or "").strip()
@@ -1207,6 +1241,93 @@ def media_archive(msgs: list[dict]) -> list[dict]:
                 "path": f"media/{m['sent_at'].strftime('%Y-%m-%d')}/{kind}/{m.get('msg_id','')}.txt",
             })
     return rows
+
+
+# ---------------------------------------------------------------- P1-3 双人对话报告
+def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
+             staff: set[str] | None = None) -> Path:
+    """P1-3 双人对话报告：两人消息时间流（气泡对话）+ 对话统计。输出 pair_report.html。"""
+    from html import escape as _esc
+    items, _ = load_input(input_path, "")
+    msgs = normalize_messages(items, staff or set())
+    a = [m for m in msgs if (m.get("sender") or "") == user_a]
+    b = [m for m in msgs if (m.get("sender") or "") == user_b]
+    if not a and not b:
+        raise ValueError(f"在输入中未找到 {user_a} / {user_b} 的消息（发送人字段不匹配）")
+    merged = sorted(a + b, key=lambda m: m["sent_at"])
+    topics = set()
+    for m in a + b:
+        t = match_topic(m["content"])
+        if t:
+            topics.add(t)
+    n_a, n_b = len(a), len(b)
+    longest_a = longest_b = 0
+    cur = prev = None
+    cnt = 0
+    for m in merged:
+        if m["sender"] == user_a:
+            if prev == user_a:
+                cnt += 1
+            else:
+                cnt = 1
+            longest_a = max(longest_a, cnt)
+            prev = user_a
+        else:
+            if prev == user_b:
+                cnt += 1
+            else:
+                cnt = 1
+            longest_b = max(longest_b, cnt)
+            prev = user_b
+    bubbles = []
+    for m in merged:
+        who = "a" if m["sender"] == user_a else "b"
+        bubbles.append(
+            "<div class='bub {w}'><span class='bt'>{t}</span><span class='bs'>{s}</span>"
+            "<div class='bc'>{c}</div></div>"
+            .format(w=who,
+                    t=_esc((m["sent_at"].isoformat() if hasattr(m["sent_at"], "isoformat") else str(m["sent_at"]))[11:16]),
+                    s=_esc(m["sender"]),
+                    c=_esc(m["content"])))
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>双人对话报告 · {_esc(user_a)} × {_esc(user_b)}</title>
+<style>
+body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f6f8;color:#1f2933;margin:0;line-height:1.6;font-size:14px}}
+.wrap{{max-width:820px;margin:0 auto;padding:32px 18px}}
+h1{{font-size:22px;margin:0 0 4px}} .sub{{color:#6b7280;font-size:13px;margin:0 0 16px}}
+.cards{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px}}
+.card{{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px}}
+.card .n{{font-size:20px;font-weight:700}} .card .k{{font-size:12px;color:#6b7280}}
+.chat{{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px}}
+.bub{{display:flex;flex-wrap:wrap;gap:6px 10px;margin:6px 0;padding:7px 10px;border-radius:8px;font-size:13px;align-items:baseline}}
+.bub.a{{background:#eef5f5;margin-right:40px}}
+.bub.b{{background:#fbf3ee;margin-left:40px;flex-direction:row-reverse}}
+.bub .bt{{font-size:11px;color:#9aa3ab;font-variant-numeric:tabular-nums}}
+.bub .bs{{font-weight:600;font-size:12px}}
+.bub .bc{{flex-basis:100%;color:#374151;word-break:break-word}}
+footer{{text-align:center;color:#9aa3ab;font-size:12px;margin-top:18px}}
+@media (max-width:640px){{.cards{{grid-template-columns:repeat(2,1fr)}}.bub.a{{margin-right:8px}}.bub.b{{margin-left:8px}}}}
+</style></head>
+<body><div class="wrap">
+<h1>{_esc(user_a)} × {_esc(user_b)} · 双人对话报告</h1>
+<p class="sub">chat-archive P1-3 · {today} · 共 {len(merged)} 条消息 · 数据已脱敏仅存本机</p>
+<div class="cards">
+<div class="card"><div class="n">{n_a}</div><div class="k">{_esc(user_a)} 消息</div></div>
+<div class="card"><div class="n">{n_b}</div><div class="k">{_esc(user_b)} 消息</div></div>
+<div class="card"><div class="n">{len(merged)}</div><div class="k">对话总数</div></div>
+<div class="card"><div class="n">{len(topics)}</div><div class="k">涉及话题</div></div>
+<div class="card"><div class="n">{max(longest_a, longest_b)}</div><div class="k">最长连续发言</div></div>
+</div>
+<h2 style="font-size:15px;margin:0 0 8px">对话时间流（{_esc(user_a)} 左 / {_esc(user_b)} 右）</h2>
+<div class="chat">{''.join(bubbles) if bubbles else '<p style="color:#9aa3ab">（无对话消息）</p>'}</div>
+<footer>由 chat-archive 本地生成 · 仅供内部经营参考</footer>
+</div></body></html>"""
+    dest = out_dir / "pair_report.html"
+    dest.write_text(html, encoding="utf-8")
+    return dest
 
 
 # ---------------------------------------------------------------- P0-5 多群汇总月报 + 员工排名
@@ -1821,6 +1942,7 @@ INFO_TYPES = [
     ("地址", ["地址", "收货地址", "发到", "寄到", "送到", "公司地址"]),
     ("金额交易", ["元", "块", "付款", "转账", "收款", "价格", "报价", "定金", "尾款", "金额", "折扣", "优惠"]),
     ("重要文件", ["文件", "文档", "表格", "附件", "截图", "资料", "链接", "链接发"]),
+    ("公众号文章", ["mp.weixin.qq.com", "公众号", "视频号", "分享文章", "这篇文章", "点击查看"]),
 ]
 
 
@@ -2725,7 +2847,7 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 def main():
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
-                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly"],
+                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly", "mcp", "pair"],
                     help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）；kb-draft=仅生成 FAQ 草稿")
     ap.add_argument("--input", default="", help="输入文件或目录（明文或加密备份，kb-sync 无需；缺省读 config.json defaults.input）")
     ap.add_argument("--staff", default="", help="员工名单三种写法：逗号名单（张三,李四）、all（全部发送人视为员工）、名单文件路径（每行一个）；不传时所有人视为客户")
@@ -2748,6 +2870,8 @@ def main():
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
     ap.add_argument("--search", default="", help="正则批量检索关键词（业务层多面过滤，输出 search.csv）")
     ap.add_argument("--groups", default="", help="monthly：多个群结果目录，逗号分隔（各目录为一次 all 运行的输出）")
+    ap.add_argument("--db", default="", help="mcp：SQLite 数据库路径（数据层库，缺省用内存库）")
+    ap.add_argument("--port", type=int, default=8765, help="mcp：监听端口（默认 8765）")
     ap.add_argument("--search-bm25", action="store_true",
                     help="检索排序用 bigram-BM25 + 时间衰减（P2-21 混合检索），默认正则命中即出")
     args = ap.parse_args()
@@ -2771,6 +2895,32 @@ def main():
     if args.task == "convert":
         items, fmts = load_input(args.input, args.tool_cmd)
         print(f"转换完成：{len(items)} 条消息（格式: {fmts}）")
+        return
+
+    if args.task == "pair":
+        if not args.user or "," not in args.user:
+            print("[错误] pair 需要 --user \"姓名A,姓名B\"（两个发送人）", file=sys.stderr)
+            sys.exit(1)
+        ua, ub = [x.strip() for x in args.user.split(",", 1)]
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        staff = load_staff(args.staff, args.staff_file)
+        try:
+            dest = run_pair(args.input, ua, ub, out_dir, staff=staff)
+        except ValueError as e:
+            print(f"[错误] {e}", file=sys.stderr)
+            sys.exit(1)
+        print(f"双人对话报告已生成：{dest}（{ua} × {ub}）")
+        return
+
+    if args.task == "mcp":
+        from chat_archive.mcp_server import serve
+        srv = serve(args.db or None, port=args.port)
+        print(f"[MCP] chat-archive MCP Server 已启动：http://127.0.0.1:{args.port}/（Ctrl+C 退出）")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            print("\n[MCP] 已停止")
         return
 
     if args.task == "monthly":
@@ -2921,6 +3071,11 @@ def main():
     # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）+ 丢单/商机信号（P0-6）
     scheme = load_scheme(args.scheme, args.duty)
     results, unanswered = run_assessment(msgs, rules, scheme)
+    try:
+        write_csv(run_dir / "customer_profiles.csv", customer_profiles(msgs, unanswered))
+        print(f"[3.5/5] 客户画像聚合（SOP 待回复提醒）→ customer_profiles.csv（{len(results)} 名员工考核 / 客户画像已生成）")
+    except Exception as e:
+        print(f"[错误] 客户画像生成失败：{e}")
 
     if use_llm:
         try:

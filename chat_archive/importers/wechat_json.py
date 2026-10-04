@@ -164,6 +164,7 @@ def parse_json(path: str | Path, chat_id: str | None = None) -> tuple[list[dict]
             "content": content,
             "type": mtype,
             "raw_hash": make_raw_hash(chat_id, sender, time, content),
+            "recalled": int(bool(_first(raw, ("recalled",)))),
         }
         out.append(m)
     return out, chat_id

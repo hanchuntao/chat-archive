@@ -33,6 +33,20 @@ def _read_csv(path: Path) -> list[dict]:
     return list(csv.DictReader(io.StringIO(text)))
 
 
+def _parse_dt_any(s: str):
+    """宽容解析常见时间串；失败返回 None（不中断渲染）。"""
+    if not s:
+        return None
+    t = str(s).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S",
+                "%Y/%m/%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%m-%d %H:%M"):
+        try:
+            return datetime.strptime(t[:19], fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _parse_daily(path: Path) -> dict:
     """daily_reports/<员工>_<日期>.md -> {员工, 日期, 要点:[(时间, 内容)]}"""
     if not path.exists():
@@ -1007,6 +1021,50 @@ def _render_echarts(daily: list[dict], types: list[dict], inter: list[dict],
             '<p class="tag">图表由 Apache ECharts 渲染（内嵌随包分发）；本地打开无网络依赖。数据为清洗脱敏后的统计口径。</p>')
 
 
+def _render_heatmap(hw: dict, lex: dict) -> str:
+    """P1-6 周×小时活跃热图（纯 stdlib SVG）+ 词汇离散度卡片。"""
+    days = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    mx = max(hw.values()) if hw else 1
+    cell = 16
+    gap = 2
+    left = 34
+    top = 22
+    w = left + 24 * (cell + gap) + 6
+    h = top + 7 * (cell + gap) + 6
+    def shade(n: int) -> str:
+        if n <= 0:
+            return "#f3f4f6"
+        r = n / mx
+        if r < 0.33:
+            return "#d1fae5"
+        if r < 0.66:
+            return "#6ee7b7"
+        return "#059669"
+    parts = [f'<svg viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="周×小时活跃热图">']
+    for i in range(24):
+        parts.append(f'<text x="{left + i * (cell + gap) + cell // 2}" y="12" '
+                     f'text-anchor="middle" font-size="8" fill="#9aa3ab">{i}</text>')
+    for d in range(7):
+        parts.append(f'<text x="{left - 4}" y="{top + d * (cell + gap) + cell - 4}" '
+                     f'text-anchor="end" font-size="10" fill="#6b7280">{days[d]}</text>')
+        for hh in range(24):
+            n = hw.get(f"{d}-{hh}", 0)
+            parts.append(
+                f'<rect x="{left + hh * (cell + gap)}" y="{top + d * (cell + gap)}" '
+                f'width="{cell}" height="{cell}" rx="2.5" fill="{shade(n)}">'
+                f'<title>{days[d]} {hh}:00 共 {n} 条</title></rect>')
+    parts.append(f'<text x="{w - 8}" y="{h - 4}" text-anchor="end" font-size="9" '
+                 f'fill="#9aa3ab">色深=消息量（{mx} 条封顶）</text>')
+    parts.append("</svg>")
+    cards = ("<div class='stat-strip' style='margin-top:10px'>"
+             f"<div class='card'><div class='n'>{lex['tokens']}</div><div class='k'>总词次（形符）</div></div>"
+             f"<div class='card'><div class='n'>{lex['types']}</div><div class='k'>词种（类符）</div></div>"
+             f"<div class='card'><div class='n'>{lex['ttr']}</div><div class='k'>词汇离散度 TTR</div></div>"
+             f"<div class='card'><div class='n'>{lex['hhi']}</div><div class='k'>词频集中度 HHI</div></div>"
+             f"<div class='card'><div class='n'>{mx}</div><div class='k'>最忙小时消息数</div></div></div>")
+    return "".join(parts) + cards
+
+
 def _render_qa() -> str:
     """P1-2 群聊问答框：本地关键词检索（假聊天真搜索，数据不出本机）。"""
     return ('<div class="qa-wrap"><div class="qa-bar">'
@@ -1053,7 +1111,7 @@ def _render_replay(msg_rows: list[dict]) -> str:
 
 
 
-_INTERACTIVE_JS = '// chat-archive report 交互层（P0-1：Tab 导航 / 全局搜索 / 表格排序；P0-2：ECharts 三件套；P0-3：消息回放过滤）\n(function () {\n  var NAV = [\n    ["经营", "01 有效回复统计", "02 员工工作日报", "03 讨论要点", "04 丢单商机风险", "05 待跟进事项"],\n    ["团队", "06 群活跃度", "07 知识库沉淀", "08 AI监督绩效考核"],\n    ["客户", "09 需求洞察", "10 客服质检信号", "11 待回复挂起队列", "12 SLA分诊", "13 丢单健康分", "14 SOP合规审计"],\n    ["洞察", "15 销售漏斗", "16 会话时间线", "17 @提及与消息明细", "18 年度分析与成员档案", "19 消息类型与互动网络"],\n    ["图表", "20 交互图表看板"],\n    ["回放", "21 消息回放时间线"],\n    ["问答", "22 群聊问答"]\n  ];\n  var nav = document.createElement("nav");\n  nav.className = "ca-nav";\n  NAV.forEach(function (g) {\n    var span = document.createElement("span");\n    span.className = "ca-group";\n    var lab = document.createElement("b");\n    lab.textContent = g[0];\n    span.appendChild(lab);\n    g.slice(1).forEach(function (t) {\n      var a = document.createElement("a");\n      a.textContent = t;\n      a.onclick = function (e) {\n        e.preventDefault();\n        var s = document.getElementById("sec-" + t.slice(0, 2));\n        if (s) {\n          s.scrollIntoView({ behavior: "smooth", block: "start" });\n          s.classList.add("flash");\n          setTimeout(function () { s.classList.remove("flash"); }, 1200);\n        }\n      };\n      span.appendChild(a);\n    });\n    nav.appendChild(span);\n  });\n  document.body.insertBefore(nav, document.body.firstChild);\n\n  var sh = document.createElement("div");\n  sh.className = "ca-search";\n  sh.innerHTML = \'<input id="ca-q" type="text" placeholder="搜索全部模块（关键词 / 人名 / 群名）…"><span id="ca-qc" class="num"></span>\';\n  var head = document.querySelector(".masthead");\n  if (head) { head.parentNode.insertBefore(sh, head.nextSibling); } else { document.body.appendChild(sh); }\n  var q = document.getElementById("ca-q"), qc = document.getElementById("ca-qc");\n  q.addEventListener("input", function () {\n    var k = q.value.trim().toLowerCase(), n = 0;\n    document.querySelectorAll("section.ca-sec").forEach(function (s) {\n      var hit = s.textContent.toLowerCase().indexOf(k) > -1;\n      s.style.borderColor = hit ? "#e8b339" : "transparent";\n      if (hit) { n++; s.scrollIntoView({ block: "nearest" }); }\n    });\n    qc.textContent = k ? ("命中 " + n + " 个模块") : "";\n  });\n\n  document.querySelectorAll("table th").forEach(function (th) {\n    th.style.cursor = "pointer";\n    th.title = "点击排序";\n    th.addEventListener("click", function () {\n      var tb = th.closest("table").querySelector("tbody");\n      if (!tb) { return; }\n      var rows = Array.prototype.slice.call(tb.rows);\n      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);\n      var asc = th.dataset.asc !== "1";\n      rows.sort(function (a, b) {\n        var x = a.cells[idx] ? a.cells[idx].textContent.trim() : "";\n        var y = b.cells[idx] ? b.cells[idx].textContent.trim() : "";\n        var nx = parseFloat(x), ny = parseFloat(y);\n        var r = (isNaN(nx) || isNaN(ny)) ? x.localeCompare(y, "zh") : nx - ny;\n        return asc ? r : -r;\n      });\n      rows.forEach(function (r) { tb.appendChild(r); });\n      th.dataset.asc = asc ? "1" : "0";\n    });\n  });\n\n  var data = null;\n  var cd = document.getElementById("ca-data");\n  if (cd) {\n    try { data = JSON.parse(cd.textContent); } catch (e) { data = null; }\n  }\n  if (window.echarts && data) {\n    var cal = data.daily || [], st = data.sender_type || [], it = data.interactions || [];\n    var calDom = document.getElementById("ch-cal");\n    if (calDom && cal.length) {\n      var calMax = 1;\n      cal.forEach(function (x) { if ((+x.total || 0) > calMax) { calMax = +x.total; } });\n      echarts.init(calDom).setOption({\n        tooltip: {},\n        visualMap: {\n          min: 0, max: calMax, calculable: true, orient: "horizontal",\n          left: "center", bottom: 0,\n          inRange: { color: ["#f6f1ea", "#c8d6c8", "#b3c6b3", "#7da37d", "#3f6f4f"] }\n        },\n        calendar: {\n          range: cal[0].date + "|" + cal[cal.length - 1].date,\n          cellSize: ["auto", 14], dayLabel: { firstDay: 1 }, monthLabel: { nameMap: "cn" }\n        },\n        series: [{\n          type: "heatmap", coordinateSystem: "calendar",\n          data: cal.map(function (x) { return [x.date, +x.total || 0]; })\n        }]\n      });\n    }\n    var skDom = document.getElementById("ch-sankey");\n    if (skDom && st.length) {\n      var senders = [], seen = {}, types2 = [], seen2 = {};\n      st.forEach(function (r) {\n        if (!seen[r.sender]) { seen[r.sender] = 1; senders.push(r.sender); }\n        if (!seen2[r.type]) { seen2[r.type] = 1; types2.push(r.type); }\n      });\n      echarts.init(skDom).setOption({\n        series: [{\n          type: "sankey", left: 20, right: 20, top: 10, bottom: 10,\n          data: senders.map(function (s) { return { name: s }; })\n                .concat(types2.map(function (t) { return { name: t }; })),\n          links: st.map(function (r) { return { source: r.sender, target: r.type, value: +r.count || 0 }; }),\n          label: { fontSize: 11 }\n        }]\n      });\n    }\n    var grDom = document.getElementById("ch-graph");\n    if (grDom && it.length) {\n      var nodes = {}, links = [];\n      it.forEach(function (r) {\n        ["from", "to"].forEach(function (k) {\n          var nm = r[k];\n          if (nm && !nodes[nm]) { nodes[nm] = { name: nm }; }\n        });\n        links.push({ source: r.from, target: r.to, value: +r.count || 1 });\n      });\n      echarts.init(grDom).setOption({\n        tooltip: {},\n        series: [{\n          type: "graph", layout: "force", roam: true,\n          data: Object.keys(nodes).map(function (k) { return nodes[k]; }),\n          links: links, force: { repulsion: 180 },\n          label: { show: true, fontSize: 10 }, lineStyle: { opacity: 0.4 }\n        }]\n      });\n    }\n  } else if (document.getElementById("ca-charts")) {\n    document.getElementById("ca-charts").insertAdjacentHTML(\n      "afterbegin",\n      \'<p class="tag">ECharts 组件缺失（未找到 echarts.min.js），以下图表不可用；其他功能不受影响。</p>\'\n    );\n  }\n\n  var tlq = document.getElementById("tl-q");\n  if (tlq) {\n    function apply() {\n      var k = tlq.value.trim().toLowerCase();\n      document.querySelectorAll(".tl-msg").forEach(function (m) {\n        var s = m.dataset.sender;\n        var showMem = null;\n        document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n          if (cb.value === s) { showMem = cb; }\n        });\n        var okMem = !showMem || showMem.checked;\n        var okTxt = !k || (m.dataset.text || "").toLowerCase().indexOf(k) > -1;\n        m.style.display = (okMem && okTxt) ? "" : "none";\n      });\n      document.querySelectorAll(".tl-day").forEach(function (d) {\n        var vis = false;\n        d.querySelectorAll(".tl-msg").forEach(function (m) {\n          if (m.style.display !== "none") { vis = true; }\n        });\n        d.style.display = vis ? "" : "none";\n      });\n    }\n    tlq.addEventListener("input", apply);\n    document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n      cb.addEventListener("change", apply);\n    });\n    apply();\n  }\n\n  /*__QA__*/\n})();\n'
+_INTERACTIVE_JS = '// chat-archive report 交互层（P0-1：Tab 导航 / 全局搜索 / 表格排序；P0-2：ECharts 三件套；P0-3：消息回放过滤）\n(function () {\n  var NAV = [\n    ["经营", "01 有效回复统计", "02 员工工作日报", "03 讨论要点", "04 丢单商机风险", "05 待跟进事项"],\n    ["团队", "06 群活跃度", "07 知识库沉淀", "08 AI监督绩效考核"],\n    ["客户", "09 需求洞察", "10 客服质检信号", "11 待回复挂起队列", "12 SLA分诊", "13 丢单健康分", "14 SOP合规审计"],\n    ["洞察", "15 销售漏斗", "16 会话时间线", "17 @提及与消息明细", "18 年度分析与成员档案", "19 消息类型与互动网络"],\n    ["图表", "20 交互图表看板"],\n    ["回放", "21 消息回放时间线"],\n    ["问答", "22 群聊问答"],\n    ["热图", "23 活跃热图与词汇"]\n  ];\n  var nav = document.createElement("nav");\n  nav.className = "ca-nav";\n  NAV.forEach(function (g) {\n    var span = document.createElement("span");\n    span.className = "ca-group";\n    var lab = document.createElement("b");\n    lab.textContent = g[0];\n    span.appendChild(lab);\n    g.slice(1).forEach(function (t) {\n      var a = document.createElement("a");\n      a.textContent = t;\n      a.onclick = function (e) {\n        e.preventDefault();\n        var s = document.getElementById("sec-" + t.slice(0, 2));\n        if (s) {\n          s.scrollIntoView({ behavior: "smooth", block: "start" });\n          s.classList.add("flash");\n          setTimeout(function () { s.classList.remove("flash"); }, 1200);\n        }\n      };\n      span.appendChild(a);\n    });\n    nav.appendChild(span);\n  });\n  document.body.insertBefore(nav, document.body.firstChild);\n\n  var sh = document.createElement("div");\n  sh.className = "ca-search";\n  sh.innerHTML = \'<input id="ca-q" type="text" placeholder="搜索全部模块（关键词 / 人名 / 群名）…"><span id="ca-qc" class="num"></span>\';\n  var head = document.querySelector(".masthead");\n  if (head) { head.parentNode.insertBefore(sh, head.nextSibling); } else { document.body.appendChild(sh); }\n  var q = document.getElementById("ca-q"), qc = document.getElementById("ca-qc");\n  q.addEventListener("input", function () {\n    var k = q.value.trim().toLowerCase(), n = 0;\n    document.querySelectorAll("section.ca-sec").forEach(function (s) {\n      var hit = s.textContent.toLowerCase().indexOf(k) > -1;\n      s.style.borderColor = hit ? "#e8b339" : "transparent";\n      if (hit) { n++; s.scrollIntoView({ block: "nearest" }); }\n    });\n    qc.textContent = k ? ("命中 " + n + " 个模块") : "";\n  });\n\n  document.querySelectorAll("table th").forEach(function (th) {\n    th.style.cursor = "pointer";\n    th.title = "点击排序";\n    th.addEventListener("click", function () {\n      var tb = th.closest("table").querySelector("tbody");\n      if (!tb) { return; }\n      var rows = Array.prototype.slice.call(tb.rows);\n      var idx = Array.prototype.indexOf.call(th.parentNode.children, th);\n      var asc = th.dataset.asc !== "1";\n      rows.sort(function (a, b) {\n        var x = a.cells[idx] ? a.cells[idx].textContent.trim() : "";\n        var y = b.cells[idx] ? b.cells[idx].textContent.trim() : "";\n        var nx = parseFloat(x), ny = parseFloat(y);\n        var r = (isNaN(nx) || isNaN(ny)) ? x.localeCompare(y, "zh") : nx - ny;\n        return asc ? r : -r;\n      });\n      rows.forEach(function (r) { tb.appendChild(r); });\n      th.dataset.asc = asc ? "1" : "0";\n    });\n  });\n\n  var data = null;\n  var cd = document.getElementById("ca-data");\n  if (cd) {\n    try { data = JSON.parse(cd.textContent); } catch (e) { data = null; }\n  }\n  if (window.echarts && data) {\n    var cal = data.daily || [], st = data.sender_type || [], it = data.interactions || [];\n    var calDom = document.getElementById("ch-cal");\n    if (calDom && cal.length) {\n      var calMax = 1;\n      cal.forEach(function (x) { if ((+x.total || 0) > calMax) { calMax = +x.total; } });\n      echarts.init(calDom).setOption({\n        tooltip: {},\n        visualMap: {\n          min: 0, max: calMax, calculable: true, orient: "horizontal",\n          left: "center", bottom: 0,\n          inRange: { color: ["#f6f1ea", "#c8d6c8", "#b3c6b3", "#7da37d", "#3f6f4f"] }\n        },\n        calendar: {\n          range: cal[0].date + "|" + cal[cal.length - 1].date,\n          cellSize: ["auto", 14], dayLabel: { firstDay: 1 }, monthLabel: { nameMap: "cn" }\n        },\n        series: [{\n          type: "heatmap", coordinateSystem: "calendar",\n          data: cal.map(function (x) { return [x.date, +x.total || 0]; })\n        }]\n      });\n    }\n    var skDom = document.getElementById("ch-sankey");\n    if (skDom && st.length) {\n      var senders = [], seen = {}, types2 = [], seen2 = {};\n      st.forEach(function (r) {\n        if (!seen[r.sender]) { seen[r.sender] = 1; senders.push(r.sender); }\n        if (!seen2[r.type]) { seen2[r.type] = 1; types2.push(r.type); }\n      });\n      echarts.init(skDom).setOption({\n        series: [{\n          type: "sankey", left: 20, right: 20, top: 10, bottom: 10,\n          data: senders.map(function (s) { return { name: s }; })\n                .concat(types2.map(function (t) { return { name: t }; })),\n          links: st.map(function (r) { return { source: r.sender, target: r.type, value: +r.count || 0 }; }),\n          label: { fontSize: 11 }\n        }]\n      });\n    }\n    var grDom = document.getElementById("ch-graph");\n    if (grDom && it.length) {\n      var nodes = {}, links = [];\n      it.forEach(function (r) {\n        ["from", "to"].forEach(function (k) {\n          var nm = r[k];\n          if (nm && !nodes[nm]) { nodes[nm] = { name: nm }; }\n        });\n        links.push({ source: r.from, target: r.to, value: +r.count || 1 });\n      });\n      echarts.init(grDom).setOption({\n        tooltip: {},\n        series: [{\n          type: "graph", layout: "force", roam: true,\n          data: Object.keys(nodes).map(function (k) { return nodes[k]; }),\n          links: links, force: { repulsion: 180 },\n          label: { show: true, fontSize: 10 }, lineStyle: { opacity: 0.4 }\n        }]\n      });\n    }\n  } else if (document.getElementById("ca-charts")) {\n    document.getElementById("ca-charts").insertAdjacentHTML(\n      "afterbegin",\n      \'<p class="tag">ECharts 组件缺失（未找到 echarts.min.js），以下图表不可用；其他功能不受影响。</p>\'\n    );\n  }\n\n  var tlq = document.getElementById("tl-q");\n  if (tlq) {\n    function apply() {\n      var k = tlq.value.trim().toLowerCase();\n      document.querySelectorAll(".tl-msg").forEach(function (m) {\n        var s = m.dataset.sender;\n        var showMem = null;\n        document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n          if (cb.value === s) { showMem = cb; }\n        });\n        var okMem = !showMem || showMem.checked;\n        var okTxt = !k || (m.dataset.text || "").toLowerCase().indexOf(k) > -1;\n        m.style.display = (okMem && okTxt) ? "" : "none";\n      });\n      document.querySelectorAll(".tl-day").forEach(function (d) {\n        var vis = false;\n        d.querySelectorAll(".tl-msg").forEach(function (m) {\n          if (m.style.display !== "none") { vis = true; }\n        });\n        d.style.display = vis ? "" : "none";\n      });\n    }\n    tlq.addEventListener("input", apply);\n    document.querySelectorAll(".tl-mem input").forEach(function (cb) {\n      cb.addEventListener("change", apply);\n    });\n    apply();\n  }\n\n  /*__QA__*/\n})();\n'
 
 def render(out_dir: Path, title: str = "") -> str:
     _qa_p = Path(__file__).resolve().parent / "assets" / "qa.js"
@@ -1138,8 +1196,25 @@ def render(out_dir: Path, title: str = "") -> str:
     t = title or "群聊工作分析报告"
 
     s_t = _sender_type_matrix(msg_rows)
+    # P1-6 词汇离散度 + 周×小时热图（纯 stdlib 统计）
+    _toks: list[str] = []
+    _hw: dict = {}
+    for _r in msg_rows:
+        _toks.extend(re.findall(r"[\u4e00-\u9fff]|[A-Za-z0-9]+", _r.get("content") or ""))
+        _dt = _parse_dt_any(_r.get("sent_at") or "")
+        if _dt is not None:
+            _key = f"{_dt.weekday()}-{_dt.hour}"
+            _hw[_key] = _hw.get(_key, 0) + 1
+    _n_tok = len(_toks)
+    _freq: dict = {}
+    for _t in _toks:
+        _freq[_t] = _freq.get(_t, 0) + 1
+    _lex = {"tokens": _n_tok, "types": len(_freq),
+            "ttr": round(len(_freq) / _n_tok, 4) if _n_tok else 0.0,
+            "hhi": round(sum((v / _n_tok) ** 2 for v in _freq.values()), 4) if _n_tok else 0.0}
     ca_data = {
         "daily": daily_act, "interactions": interactions[:60],
+        "hour_week": _hw, "lexicon": _lex,
         "sender_type": s_t[:200], "members": members,
         "msg_types": msg_types, "keywords": keywords[:30],
         "msgs": [{"s": r.get("sender") or "?", "t": (r.get("sent_at") or "")[:16],
@@ -1182,6 +1257,7 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("20", "交互图表看板", _render_echarts(daily_act, msg_types, interactions, s_t, members), "日历热图 · 桑基图 · 互动网络（Apache ECharts，本地无网络渲染）"),
         _section("21", "消息回放时间线", _render_replay(msg_rows), "按日分组 · 成员过滤 · 搜索高亮（结论可回原文审计）"),
         _section("22", "群聊问答", _render_qa(), "本地检索本群消息 · 假聊天真搜索 · 数据不出本机（P1-2）"),
+        _section("23", "活跃热图与词汇", _render_heatmap(_hw, _lex), "周×小时活跃热图 · 词汇离散度 TTR · 词频集中度 HHI（P1-6）"),
     ])
 
     return f"""<!DOCTYPE html>

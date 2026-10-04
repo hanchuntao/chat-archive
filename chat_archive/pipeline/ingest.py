@@ -52,6 +52,7 @@ def ingest_file(db: Database, path: str | Path, chat_id: str | None = None,
             stats.noise_dropped += 1
             continue
 
+        m_clean["recalled"] = int(bool(m_clean.get("recalled") or m.get("recalled")))
         dr: DesensitizeResult = des.apply(m_clean["content"])
         m_clean["content"] = dr.content
         m_clean["masked"] = bool(dr.hits)
