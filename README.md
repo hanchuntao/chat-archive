@@ -496,6 +496,29 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 - `knowledge.local.dir`：本地知识库目录，**可填 Obsidian vault 路径等任意绝对路径**（见下节）。
 - `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成。
 
+## 打包分发（给同事/客户免安装用）
+
+本地打包含 macOS / Windows 两平台（Windows 需在 Windows 机器或 CI 上打）：
+
+```bash
+pip install pyinstaller
+pyinstaller chat-archive.spec --noconfirm     # 产物 dist/chat-archive/（onedir，约 23MB，解压即用）
+./dist/chat-archive/chat-archive all ...      # 无需 Python 环境
+```
+
+CI 已配双平台打包（打 tag `v*` 自动出 Release 产物）。打包版与源码版功能一致（含 kb-sync / mcp / watch）。
+
+## 通知触达（webhook / 邮件，可选）
+
+config.json `webhook` 段配置后，每次 `all` 完成自动推送事件摘要：
+
+- `type: dingtalk` — 钉钉机器人（自动官方 HMAC 签名，`timestamp`+`sign` 参数）
+- `type: wecom` — 企业微信机器人
+- `type: generic` — 自定义 URL（带 `X-Chat-Archive-Signature` 签名头 + 时间戳，接收方用同一 secret 验签防伪造）
+- `email` — SMTP 发送（支持无认证/账号密码两种，UTF-8 主题与正文）
+
+未配置时静默跳过，不影响主流程；推送失败只记日志，不影响退出码。
+
 ## 知识库同步（kb-sync）
 
 产物（脱敏后的 `knowledge/`）支持双通道消费，由 `config.json` 的 `knowledge` 段控制：

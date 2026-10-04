@@ -165,6 +165,14 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 
 以上能力全部并入本项目，CLI 与 AI skill 两种入口产物一致；无新增 pip 依赖（词云除外，默认关）。
 
+## 第5轮吸收（生产就绪 + 商业化能力）
+
+- **kb-sync 知识库同步**：本地目录 / 腾讯 ima 双通道。未配 Key 时自动导出 `out/ima_export/`（脱敏 .md + 导入说明）供手动导入；配 Key 走 COS 签名直传。`--out` 传结果根即可（自动定位最新批次）。
+- **通知触达**：`all` 完成后自动推送事件摘要——钉钉（官方 HMAC 签名）/ 企业微信 / 自定义 URL（带 `X-Chat-Archive-Signature` 验签头）/ SMTP 邮件。
+- **LLM 提炼**：`--llm` 开关 + `config.json` 的 `llm` 段（或环境变量 `CHAT_ARCHIVE_LLM_BASE_URL/API_KEY/MODEL` 覆盖，本地地址自动绕过代理）。未配置时规则版照常产出，不阻塞。
+- **config.local.json**：真实密钥/路径写这里（已 gitignore），程序深合并覆盖 `config.json`，密钥不入库。
+- **打包分发**：`pyinstaller chat-archive.spec` 出 onedir（macOS/Windows 双平台 CI 产物），解压即用、免 Python 环境。
+
 ## 常见问题
 
 - **“识别不出消息”**：检查文件是否为支持的格式（见 references）；TXT 需要“时间 发送人: 内容”行；QQ 消息管理器导出支持“时间 发送人(QQ号)+下一行内容”两行式。
