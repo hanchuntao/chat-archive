@@ -1440,7 +1440,7 @@ def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
                     pass
         changed = first or now != cache
         if changed:
-            cmd = [sys.executable, str(script), "all", "--input", input_dir,
+            cmd = [sys.argv[0], "all", "--input", input_dir,
                    "--out", out, "--staff", staff_arg or "all"]
             print(f"[watch] {'初次全量' if first else '检测到输入变化'} → 执行："
                   + " ".join(cmd))
