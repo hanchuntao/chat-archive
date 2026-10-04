@@ -1756,9 +1756,14 @@ def notify_webhook(events: list[dict], wh: dict) -> str:
         payload = {"msgtype": "markdown", "markdown": {"content": text}}
     else:
         payload = {"events": events[:20], "title": title}
+    _body = _j.dumps(payload, ensure_ascii=False).encode("utf-8")
+    _hdr = {"Content-Type": "application/json"}
+    if secret and wtype != "dingtalk":
+        # 通用 webhook 也带签名头：接收方用同一 secret 验签（防伪造/防串改）
+        _hdr["X-Chat-Archive-Signature"] = _h.new(secret.encode(), _body, _h.sha256).hexdigest()
+        _hdr["X-Chat-Archive-Timestamp"] = str(round(_t.time() * 1000))
     try:
-        req = _ur.Request(url, data=_j.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                          headers={"Content-Type": "application/json"})
+        req = _ur.Request(url, data=_body, headers=_hdr)
         resp = _opener.open(req, timeout=10)
         return f"Webhook 已推送 {len(events)} 条事件（HTTP {resp.status}）"
     except Exception as e:

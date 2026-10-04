@@ -26,7 +26,7 @@ jobs:
         run: pytest tests/ -q --cov=chat_archive --cov=skill/scripts --cov-fail-under=80
 
       - name: 门禁 2 · ruff 静态检查
-        run: ruff check chat_archive/ skill/scripts/chat_archive.py
+        run: ruff check chat_archive/ skill/scripts/ tests/
 
       - name: 门禁 3 · mypy 类型检查（数据层）
         run: mypy chat_archive/ --ignore-missing-imports --follow-imports=skip
@@ -34,15 +34,19 @@ jobs:
       - name: PyInstaller 打包（onedir）
         run: pyinstaller chat-archive.spec --noconfirm
 
-      - name: 冒烟测试 · 业务层入口可执行
+      - name: 冒烟测试 · 打包产物跑全流程（样例输入，断言关键产物）
         shell: bash
         run: |
+          IN="${{ github.workspace }}/sample_data/ecom_chat.txt"
+          OUT="$RUNNER_TEMP/ci_out"
           if [ "${{ runner.os }}" = "Windows" ]; then
-            dist/chat-archive/chat-archive.exe --help > /dev/null 2>&1 || dist/chat-archive/chat-archive.exe --help
+            dist/chat-archive/chat-archive.exe all --input "$IN" --out "$OUT" --staff all > /dev/null 2>&1 || exit 1
           else
-            ./dist/chat-archive/chat-archive --help > /dev/null
+            ./dist/chat-archive/chat-archive all --input "$IN" --out "$OUT" --staff all > /dev/null 2>&1 || exit 1
           fi
-          echo "smoke OK"
+          find "$OUT" -name "report.html" | head -1 || exit 1
+          find "$OUT" -name "assessment.csv" | head -1 || exit 1
+          echo "smoke OK (report.html + assessment.csv 已生成)"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
