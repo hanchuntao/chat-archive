@@ -38,7 +38,10 @@ from pathlib import Path
 
 # ---- 复用 chat-archive CLI 数据管道（脱敏规则引擎），保证 PII 规则全局唯一 ----
 # 路径: skill/scripts/chat_archive.py -> ~/work/chat-archive
-_CLI_ROOT = Path(__file__).resolve().parents[2]
+if getattr(sys, "frozen", False):
+    _CLI_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+else:
+    _CLI_ROOT = Path(__file__).resolve().parents[2]
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
 from chat_archive.pipeline.desensitize import Desensitizer  # noqa: E402

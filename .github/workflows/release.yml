@@ -1,0 +1,58 @@
+name: build-release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install -r requirements-dev.txt
+
+      - name: 门禁 1 · 单元测试 + 覆盖率 ≥80%
+        run: pytest tests/ -q --cov=chat_archive --cov=skill/scripts --cov-fail-under=80
+
+      - name: 门禁 2 · ruff 静态检查
+        run: ruff check chat_archive/ skill/scripts/chat_archive.py
+
+      - name: 门禁 3 · mypy 类型检查（数据层）
+        run: mypy chat_archive/ --ignore-missing-imports --follow-imports=skip
+
+      - name: PyInstaller 打包（onedir）
+        run: pyinstaller chat-archive.spec --noconfirm
+
+      - name: 冒烟测试 · 业务层入口可执行
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            dist/chat-archive/chat-archive.exe --help > /dev/null 2>&1 || dist/chat-archive/chat-archive.exe --help
+          else
+            ./dist/chat-archive/chat-archive --help > /dev/null
+          fi
+          echo "smoke OK"
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-archive-${{ matrix.os }}
+          path: dist/
+
+      - name: 发布 Release（仅打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**
+          generate_release_notes: true
