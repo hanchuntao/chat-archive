@@ -67,6 +67,9 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `keywords.csv` | 年度高频词 TopN（词云数据源，对齐 WeChatMsg/MemoTrace 年度报告） |
 | `sentiment.json` | 情感倾向：总体 / 每日趋势 / 成员积极消极（纯标准库词表） |
 | `members.csv` | 群成员完整信息表：发言/有效/口水率/活跃天数/字数/被@/情感/首末发言/高峰/熬夜 |
+| `activity_daily.csv` | 每日消息量日历：日期/消息/有效/参与人数/积极/消极（对齐 MemoTrace 每日消息量） |
+| `message_types.csv` | 消息类型分布：text/system/image/file/link/voice 占比（对齐 WeChatMsg/wechat-dump） |
+| `interactions.csv` | 成员互动配对：谁回复谁、配对次数、平均响应分钟（对齐 WhatsR 回复时间分析） |
 | `mentions.csv` | @提及统计：谁是被 @ 最多的关键对接人 |
 | `messages.csv` | 扁平消息表：时间/发送人/角色/话题/内容，Excel 直接透视 |
 | `assessment.md` | 绩效考核评分 |
@@ -137,8 +140,9 @@ python3 -m pytest tests/ -q
 
 ## 质量与测试
 
-- **测试**：254 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支）。
-- **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%。
+- **测试**：296 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支）。
+- **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%（convert_wx.py 已补 import 直调测试至 99%）。
+- **能力补强（第 5 轮）**：① db schema 版本化迁移（PRAGMA user_version，旧库自动升级、未来库拒绝）；② 每次运行生成 `manifest.json`（产物 SHA256 + 运行参数），`verify` 子命令校验快照完整性（篡改/缺失/多余检测）；③ 知识库条目级去重（相同问答不重复入库）。
 - **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
 - **规范文档**：`specs/architecture.md`（模块职责与主流软件对齐）、`specs/data-model.md`（SQLite 表结构与 FTS5）、`specs/privacy.md`（脱敏/合规红线）、`specs/testing.md`（测试策略与覆盖率口径）。
 - **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
@@ -243,6 +247,8 @@ python3 skill/scripts/convert_wx.py --input 群记录.txt  --output 标准.json 
 | `--version`（全局） | 打印版本号后退出 |
 
 所有命令支持 `--json` 输出，便于 skill / 脚本调用。
+
+业务层子命令（`skill/scripts/chat_archive.py`）：`all`（全流程）/ `stats` / `daily` / `summary` / `kb` / `assess` / `convert` / `kb-sync` / `kb-draft` / `verify`（快照完整性校验：`verify --input <结果目录>`，SHA256 比对篡改/缺失/多余，ok 退出 0 否则 1）。
 
 ## 员工名单（--staff，一个参数三种写法）
 
@@ -468,3 +474,4 @@ ima 凭证在 https://ima.qq.com/agent-interface 生成（API Key 只显示一�
 python3 skill/scripts/chat_archive.py kb-sync --out 输出目录 --to local
 # 之后在 Obsidian 打开 vault 即可看到当天沉淀的知识条目
 ```
+

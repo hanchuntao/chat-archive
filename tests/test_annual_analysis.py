@@ -67,3 +67,25 @@ def test_report_contains_annual_section(tmp_path):
     html = (run / "report.html").read_text(encoding="utf-8")
     assert "年度分析与成员档案" in html
     assert "情感倾向" in html
+
+
+def test_round6_message_insight_artifacts(tmp_path):
+    """第6轮吸收：每日消息量 / 消息类型分布 / 互动配对。"""
+    run = _run_all(tmp_path)
+    assert (run / "activity_daily.csv").exists()
+    assert (run / "message_types.csv").exists()
+    assert (run / "interactions.csv").exists()
+    types = (run / "message_types.csv").read_text(encoding="utf-8").splitlines()
+    assert types[0].startswith("type,count,share")
+    assert len(types) >= 2
+    daily = (run / "activity_daily.csv").read_text(encoding="utf-8").splitlines()
+    assert daily[0].startswith("date,total,effective")
+    inter = (run / "interactions.csv").read_text(encoding="utf-8").splitlines()
+    assert inter[0].startswith("from,to,count")
+
+
+def test_round6_report_section19(tmp_path):
+    run = _run_all(tmp_path)
+    html = (run / "report.html").read_text(encoding="utf-8")
+    assert "消息类型与互动网络" in html
+    assert "互动配对" in html

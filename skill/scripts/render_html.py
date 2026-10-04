@@ -835,6 +835,43 @@ def _render_members(rows: list[dict]) -> str:
             '<tbody>' + "".join(trs) + "</tbody></table></div>")
 
 
+def _render_message_insight(daily: list[dict], types: list[dict], inter: list[dict]) -> str:
+    """消息洞察（第6轮吸收）：每日消息量日历 + 类型分布 + 互动配对。"""
+    out = []
+    if types:
+        mx = max((int(r.get("count", 0) or 0) for r in types), default=1) or 1
+        seg = ""
+        for r in types:
+            pct = int(r.get("count", 0) or 0) / mx * 100
+            seg += (f"<div style='margin:3px 0;display:flex;gap:8px;align-items:center'>"
+                    f"<span style='width:96px;flex:none'>{escape(r.get('type',''))}</span>"
+                    f"<div class='bar' style='flex:1'><i style='width:{pct:.0f}%'></i></div>"
+                    f"<span class='num' style='flex:none'>{r.get('count','')}（{escape(r.get('share',''))}）</span></div>")
+        out.append("<b>消息类型分布</b>" + seg)
+    if daily:
+        rows = daily[-30:]
+        mx = max((int(r.get("total", 0) or 0) for r in rows), default=1) or 1
+        seg = ""
+        for r in rows:
+            pct = int(r.get("total", 0) or 0) / mx * 100
+            seg += (f"<div style='margin:2px 0;display:flex;gap:8px;align-items:center'>"
+                    f"<span style='width:86px;flex:none'>{escape(r.get('date',''))}</span>"
+                    f"<div class='bar' style='flex:1'><i style='width:{pct:.0f}%'></i></div>"
+                    f"<span class='num' style='flex:none'>{r.get('total','')} 条 / {r.get('senders','')} 人</span></div>")
+        out.append("<div style='margin-top:10px'><b>每日消息量（近 30 天）</b></div>" + seg)
+    if inter:
+        trs = "".join(
+            f"<tr><td>{escape(r.get('from',''))}</td><td>→</td><td>{escape(r.get('to',''))}</td>"
+            f"<td class='num'>{r.get('count','')}</td><td class='num'>{escape(r.get('avg_resp_min',''))} 分</td></tr>"
+            for r in inter[:30])
+        out.append("<div style='margin-top:10px'><b>互动配对 Top（10 分钟窗口内的回复关系）</b></div>"
+                   '<table><colgroup><col style="width:32%"><col style="width:6%"><col style="width:32%">'
+                   '<col style="width:15%"><col style="width:15%"></colgroup>'
+                   '<thead><tr><th>回复者</th><th></th><th>被回复者</th><th>配对次数</th><th>平均响应</th></tr></thead>'
+                   '<tbody>' + trs + "</tbody></table>")
+    return "<br>".join(out) if out else '<p class="tag">（无消息洞察数据）</p>'
+
+
 def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
@@ -866,6 +903,9 @@ def render(out_dir: Path, title: str = "") -> str:
         except Exception:
             sentiment = {}
     members = _read_csv(out_dir / "members.csv")
+    daily_act = _read_csv(out_dir / "activity_daily.csv")
+    msg_types = _read_csv(out_dir / "message_types.csv")
+    interactions = _read_csv(out_dir / "interactions.csv")
     ledger = _read_csv(out_dir / "payment_ledger.csv")
     revokes = _read_csv(out_dir / "revoke_audit.csv")
     funnel = _read_csv(out_dir / "funnel.csv")
@@ -930,6 +970,7 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("16", "会话时间线与媒体归档", _render_timeline(timeline, media_rows, trend_md), "客户交互轨迹 · 多模态占位 · 周期环比"),
         _section("17", "@提及与消息明细", _render_mentions(mentions, msg_rows), "关键对接人识别 · 扁平表透视"),
         _section("18", "年度分析与成员档案", _render_keywords(keywords) + _render_sentiment(sentiment) + _render_members(members), "高频词 TopN · 情感倾向 · 成员完整档案（对齐 WeChatMsg/MemoTrace）"),
+        _section("19", "消息类型与互动网络", _render_message_insight(daily_act, msg_types, interactions), "每日消息量 · 类型占比 · 回复配对（对齐 MemoTrace / WhatsR）"),
     ])
 
     return f"""<!DOCTYPE html>

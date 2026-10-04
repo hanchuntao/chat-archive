@@ -472,6 +472,7 @@ def normalize_messages(items: list[dict], staff: set[str], alias_map: dict[str, 
             "sender": sender,
             "is_staff": is_staff,
             "content": content[:2000],
+            "msg_type": it.get("msg_type") or "text",
             "sent_at": _parse_dt(it.get("sent_at")) or datetime.now(),
         })
     out.sort(key=lambda m: (m["group_id"], m["sent_at"]))
@@ -624,7 +625,8 @@ def build_knowledge(msgs: list[dict], mask: bool = True) -> tuple[list[dict], st
             sc = sc.replace(s["sender"], mask_identity(s["sender"], True, staff_ids, anon))
         e = entries.setdefault(topic, {"title": f"{topic}知识条目", "category": topic,
                                        "tags": [topic], "content": "", "qa": []})
-        e["qa"].append({"q": qc, "a": sc, "time": s["sent_at"].isoformat()})
+        if (qc, sc) not in {(qa["q"], qa["a"]) for qa in e["qa"]}:  # 知识条目级去重
+            e["qa"].append({"q": qc, "a": sc, "time": s["sent_at"].isoformat()})
     if not entries:
         # 全员员工场景（--staff all / 员工群）：没有"客户问→员工答"配对，
         # 退化为按话题聚合员工实质消息，沉淀为知识条目
@@ -637,8 +639,9 @@ def build_knowledge(msgs: list[dict], mask: bool = True) -> tuple[list[dict], st
             c = mask_pii(m["content"]) if mask else m["content"]
             e = entries.setdefault(topic, {"title": f"{topic}知识条目", "category": topic,
                                            "tags": [topic], "content": "", "qa": []})
-            e["qa"].append({"q": f"关于「{topic}」，群里有相关经验或信息吗？",
-                            "a": c, "time": m["sent_at"].isoformat()})
+            if (f"关于「{topic}」，群里有相关经验或信息吗？", c) not in {(qa["q"], qa["a"]) for qa in e["qa"]}:
+                e["qa"].append({"q": f"关于「{topic}」，群里有相关经验或信息吗？",
+                                "a": c, "time": m["sent_at"].isoformat()})
     entry_list = []
     for t, e in entries.items():
         # P1-⑪ 知识库自动分类归档：7 类信息（任务待办/截止/会议/电话/地址/金额/文件）抽取
@@ -1085,6 +1088,63 @@ def member_summary(msgs: list[dict], act_rows: list[dict]) -> list[dict]:
             "peak_hour": a.get("peak_hour", "-"), "night": a.get("night", 0),
         })
     return sorted(rows, key=lambda x: -x["sent"])
+
+
+# ---------------------------------------------------------------- 消息洞察（第6轮吸收：对齐 MemoTrace 每日消息量 / WeChatMsg 消息类型 / WhatsR 回复时间）
+def daily_activity(msgs: list[dict]) -> list[dict]:
+    """每日消息量日历：日期/消息/有效/参与人数/积极/消极。纯标准库。"""
+    from collections import OrderedDict
+    days: "OrderedDict[str, dict]" = OrderedDict()
+    for m in msgs:
+        d = m["sent_at"].strftime("%Y-%m-%d")
+        dd = days.setdefault(d, {"date": d, "total": 0, "effective": 0, "senders": set(), "pos": 0, "neg": 0})
+        dd["total"] += 1
+        if classify(m["content"]) != "filler":
+            dd["effective"] += 1
+        dd["senders"].add(m["sender"])
+        c = _text_plain(m["content"])
+        pos = sum(1 for w in SENTI_POS if w in c)
+        neg = sum(1 for w in SENTI_NEG if w in c)
+        if pos > neg:
+            dd["pos"] += 1
+        elif neg > pos:
+            dd["neg"] += 1
+    return [{"date": d, "total": dd["total"], "effective": dd["effective"],
+             "senders": len(dd["senders"]), "pos": dd["pos"], "neg": dd["neg"]}
+            for d, dd in days.items()]
+
+
+def message_type_dist(msgs: list[dict]) -> list[dict]:
+    """消息类型分布（text/image/voice/video/file/link/sticker/miniprogram/system）。
+    业务层消息字段为 msg_type（数据层为 type），两者都兼容。"""
+    from collections import Counter
+    cnt = Counter((m.get("msg_type") or m.get("type") or "text") for m in msgs)
+    total = len(msgs) or 1
+    return [{"type": t, "count": n, "share": f"{n / total * 100:.1f}%"}
+            for t, n in cnt.most_common()]
+
+
+def reply_pairs(msgs: list[dict], window_min: int = 10) -> list[dict]:
+    """成员互动配对（对齐 WhatsR 回复时间分析，简化版）：
+    时间窗内相邻两条发言视为「后一人回复前一人的发言」，统计配对数与平均响应分钟。"""
+    from collections import OrderedDict
+    ordered = sorted(msgs, key=lambda m: m["sent_at"])
+    pairs: "OrderedDict[tuple, dict]" = OrderedDict()
+    prev = None
+    for m in ordered:
+        if prev is not None and m["sender"] != prev["sender"]:
+            delta = (m["sent_at"] - prev["sent_at"]).total_seconds() / 60.0
+            if 0 < delta <= window_min:
+                k = (prev["sender"], m["sender"])
+                p = pairs.setdefault(k, {"from": k[0], "to": k[1], "count": 0, "resp": []})
+                p["count"] += 1
+                p["resp"].append(round(delta, 1))
+        prev = m
+    rows = []
+    for k, p in pairs.items():
+        rows.append({"from": p["from"], "to": p["to"], "count": p["count"],
+                     "avg_resp_min": round(sum(p["resp"]) / len(p["resp"]), 1)})
+    return sorted(rows, key=lambda x: -x["count"])[:50]
 
 
 # ---------------------------------------------------------------- 丢单/商机信号（P0-6）
@@ -1551,6 +1611,44 @@ def behavior_metrics(msgs: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------- P2-⑮ 检索质量门（轻量规则版）
+def build_manifest(run_dir: Path, args: argparse.Namespace) -> dict:
+    """快照完整性清单：产物文件 SHA256 + 运行参数。商业审计/可追溯用。"""
+    files = {}
+    for f in sorted(run_dir.rglob("*")):
+        if f.is_file():
+            files[str(f.relative_to(run_dir))] = hashlib.sha256(f.read_bytes()).hexdigest()
+    return {
+        "schema_version": 1,
+        "generated_at": datetime.now().isoformat(),
+        "command": {
+            "task": getattr(args, "task", ""),
+            "input": getattr(args, "input", ""),
+            "staff": getattr(args, "staff", ""),
+            "out": str(run_dir),
+        },
+        "files": files,
+    }
+
+
+def verify_snapshot(run_dir: Path) -> dict:
+    """校验快照完整性：逐文件比对 SHA256，报告损坏/缺失/多余/正常。"""
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.exists():
+        return {"ok": False, "reason": "缺少 manifest.json（旧版快照或产物不完整）"}
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    expected = manifest.get("files", {})
+    actual = {}
+    for f in sorted(run_dir.rglob("*")):
+        if f.is_file() and f.name != "manifest.json":
+            actual[str(f.relative_to(run_dir))] = hashlib.sha256(f.read_bytes()).hexdigest()
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    tampered = sorted(k for k in (set(expected) & set(actual)) if expected[k] != actual[k])
+    ok = not missing and not extra and not tampered
+    return {"ok": ok, "checked": len(expected), "missing": missing,
+            "extra": extra, "tampered": tampered}
+
+
 def verify_summary(md: str, msgs: list[dict]) -> str:
     """轻量 self-test：摘要每条要点若能在原文找到同前缀内容 → 标 [可溯源]，否则标 [待核对]。
 
@@ -2348,7 +2446,7 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 def main():
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
-                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft"],
+                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify"],
                     help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）；kb-draft=仅生成 FAQ 草稿")
     ap.add_argument("--input", default="", help="输入文件或目录（明文或加密备份，kb-sync 无需；缺省读 config.json defaults.input）")
     ap.add_argument("--staff", default="", help="员工名单三种写法：逗号名单（张三,李四）、all（全部发送人视为员工）、名单文件路径（每行一个）；不传时所有人视为客户")
@@ -2402,6 +2500,19 @@ def main():
         from sync_kb import run as kb_run
         kb_run(str(out), args.kb_config, "all")
         return
+
+    if args.task == "verify":
+        # 校验最近一份（或 --input 指定的）快照完整性
+        target = Path(args.input) if args.input and (Path(args.input).exists() and Path(args.input).is_dir()) else run_dir
+        if not (target / "manifest.json").exists():
+            snaps = sorted([d for d in out.iterdir() if d.is_dir() and (d / "manifest.json").exists()])
+            if not snaps:
+                print("[错误] 没有可校验的快照：请指定含 manifest.json 的结果目录", file=sys.stderr)
+                sys.exit(1)
+            target = snaps[-1]
+        res = verify_snapshot(target)
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        sys.exit(0 if res["ok"] else 1)
 
     staff = load_staff(args.staff, args.staff_file)
     want_all = bool(args.all_staff) or (args.staff and args.staff.strip().lower() == "all")
@@ -2636,7 +2747,11 @@ def main():
                                                 encoding="utf-8")
         mem = member_summary(msgs, act)
         write_csv(run_dir / "members.csv", mem)
-        print(f"[9/9] 年度分析（高频词/情感/成员档案）→ keywords.csv / sentiment.json / members.csv")
+        # 第6轮吸收：每日消息量日历 / 消息类型分布 / 互动配对
+        write_csv(run_dir / "activity_daily.csv", daily_activity(msgs))
+        write_csv(run_dir / "message_types.csv", message_type_dist(msgs))
+        write_csv(run_dir / "interactions.csv", reply_pairs(msgs))
+        print(f"[9/9] 年度与消息分析（高频词/情感/成员档案/每日量/类型/互动）→ keywords.csv / sentiment.json / members.csv / activity_daily.csv / message_types.csv / interactions.csv")
     except Exception as e:
         errors.append(f"年度分析失败: {e}")
         print(f"[错误] 年度分析失败：{e}")
@@ -2924,6 +3039,15 @@ def main():
     except Exception as e:
         errors.append(f"周期环比失败: {e}")
         print(f"[错误] 周期环比失败：{e}")
+
+    # 9b. 快照完整性清单（所有产物生成完成后，商业审计/可追溯）：产物 SHA256 + 运行参数
+    try:
+        manifest = build_manifest(run_dir, args)
+        (run_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"[28/28] 完整性清单 → manifest.json（{len(manifest['files'])} 个产物 SHA256 已登记）")
+    except Exception as e:
+        errors.append(f"完整性清单生成失败: {e}")
+        print(f"[错误] 完整性清单生成失败：{e}")
 
     if errors:
         print("\n[错误] 本次运行存在失败项（见上），退出码 1：", *errors, sep="\n  - ")
