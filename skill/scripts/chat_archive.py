@@ -1401,6 +1401,7 @@ def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
 
     用法：chat-archive watch --input ./chats --out ./out --interval 120 --staff all
     """
+    import signal as _sig
     import subprocess
     import time as _time
     root = Path(input_dir)
@@ -1409,9 +1410,27 @@ def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
     cache: dict[str, float] = {}
     script = Path(__file__).resolve()
     print(f"[watch] 监控目录 {root}（每 {interval}s 检查，输入变化自动重跑）")
-    print("[watch] 提示：初次运行会全量处理一次；之后仅当文件新增/修改时重跑。Ctrl+C 退出。")
+    print("[watch] 提示：初次运行会全量处理一次；之后仅当文件新增/修改时重跑。Ctrl+C / SIGTERM 优雅退出。")
+    _stop = False
+    _active: subprocess.Popen | None = None
+
+    def _on_signal(signum, frame):
+        nonlocal _stop
+        _stop = True
+        if _active is not None and _active.poll() is None:
+            try:
+                _active.terminate()
+            except Exception:
+                pass
+        print("[watch] 收到停止信号，正在退出…", file=sys.stderr)
+
+    for _sig_name in ("SIGINT", "SIGTERM"):
+        try:
+            _sig.signal(getattr(_sig, _sig_name), _on_signal)
+        except (ValueError, OSError, RuntimeError):
+            pass  # 非主线程/受限环境：放弃信号注册，Ctrl+C 兜底
     first = True
-    while True:
+    while not _stop:
         now: dict[str, float] = {}
         for p in root.rglob("*"):
             if p.is_file():
@@ -1426,12 +1445,21 @@ def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
             print(f"[watch] {'初次全量' if first else '检测到输入变化'} → 执行："
                   + " ".join(cmd))
             try:
-                subprocess.run(cmd, check=False)
+                _active = subprocess.Popen(cmd)
+                _active.wait()
             except Exception as e:
                 print(f"[watch] 重跑失败：{e}")
+            finally:
+                _active = None
             cache = now
             first = False
-        _time.sleep(max(1, interval))
+        if _stop:
+            break
+        for _ in range(max(1, interval)):
+            if _stop:
+                break
+            _time.sleep(1)
+    print("[watch] 已退出")
 
 
 def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
