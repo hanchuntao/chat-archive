@@ -1408,7 +1408,6 @@ def run_watch(input_dir: str, out: str, interval: int = 60, staff_arg: str = "",
     if not root.is_dir():
         raise ValueError(f"watch 需要输入目录（不是文件）：{input_dir}")
     cache: dict[str, float] = {}
-    script = Path(__file__).resolve()
     print(f"[watch] 监控目录 {root}（每 {interval}s 检查，输入变化自动重跑）")
     print("[watch] 提示：初次运行会全量处理一次；之后仅当文件新增/修改时重跑。Ctrl+C / SIGTERM 优雅退出。")
     _stop = False
