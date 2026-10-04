@@ -196,7 +196,21 @@ chat-archive
 - 可选依赖：LLM 提炼 `pip install requests`；本地向量检索 `pip install chromadb`。
 - 加密备份转换（`--tool-cmd`）在 Windows 上需指向 `wechat-cli.exe` 类工具，命令用双引号包裹参数。
 
+## 从 wechat-cli 导出的记录 → 标准 JSON
+
+`wechat-cli history --format json` 导出的 `messages` 是格式化文本行（`[时间] 发送者: 内容`），
+项目导入器能自动识别；如需显式转为标准 JSON 供其它工具复用，用桥接脚本：
+
+```bash
+python3 skill/scripts/convert_wx.py --input 群记录.json --output 标准.json
+python3 skill/scripts/convert_wx.py --input 群记录.txt  --output 标准.json   # 手工 TXT 同样支持
+```
+
+支持：带/不带时间戳的行、UTF-8 / GBK / GB18030 编码自动检测、媒体消息类型识别（图片/语音/视频/文件/链接/位置）。
+输入文件不存在或结构无法识别时返回退出码 1（可脚本化判断）。
+
 ## 输入格式
+
 
 兼容 wechat-cli / WeFlow / wx-cli 导出的 JSON（字段自动探测）：
 
