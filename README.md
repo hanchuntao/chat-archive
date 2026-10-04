@@ -146,6 +146,8 @@ python3 -m pytest tests/ -q
 - **测试**：296 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支）。
 - **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%（convert_wx.py 已补 import 直调测试至 99%）。
 - **能力补强（第 5 轮）**：① db schema 版本化迁移（PRAGMA user_version，旧库自动升级、未来库拒绝）；② 每次运行生成 `manifest.json`（产物 SHA256 + 运行参数），`verify` 子命令校验快照完整性（篡改/缺失/多余检测）；③ 知识库条目级去重（相同问答不重复入库）。
+- **第 8 轮能力吸收（P0+P1）**：report 交互化（ca-data + 全局搜索高亮 + 表格排序 + ECharts 日历热图/桑基图/关系图 + 消息回放时间线）；Webhook/邮件主动触达；多群月报 + 员工排名；DISCLAIMER/THANKS 合规文档；SQLite PRAGMA 加固（WAL/busy_timeout）；PyInstaller 打包 + CI 门禁；MCP Server（JSON-RPC + 本地问答检索）；双人对话报告 `pair`；防撤回位（recalled 列）；知识库第 8 类（公众号文章）；周×小时活跃热图 + 词汇离散度 TTR/HHI；客户画像聚合（漏回复 SOP 提醒）；FTS5 BM25 排序优化。
+- **第 8 轮能力吸收（P2）**：CSV 产物 YAML 伴生版；ChatLab 标准 JSONL 导出；`--active-days` 活跃窗口；行业规则包（config.industry）；知识库质量评分（quality_scores.csv）；report 高频词云模块；`watch` 守护（mtime 变化自动重跑）；pair 双向平均回复延迟；MCP Server REST API（/api/health、/api/search、/api/stats、/api/keywords）；version.json 格式适配表。
 - **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
 - **规范文档**：`specs/architecture.md`（模块职责与主流软件对齐）、`specs/data-model.md`（SQLite 表结构与 FTS5）、`specs/privacy.md`（脱敏/合规红线）、`specs/testing.md`（测试策略与覆盖率口径）。
 - **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
@@ -251,7 +253,16 @@ python3 skill/scripts/convert_wx.py --input 群记录.txt  --output 标准.json 
 
 所有命令支持 `--json` 输出，便于 skill / 脚本调用。
 
-业务层子命令（`skill/scripts/chat_archive.py`）：`all`（全流程）/ `stats` / `daily` / `summary` / `kb` / `assess` / `convert` / `kb-sync` / `kb-draft` / `verify`（快照完整性校验：`verify --input <结果目录>`，SHA256 比对篡改/缺失/多余，ok 退出 0 否则 1）。
+业务层子命令（`skill/scripts/chat_archive.py`）：`all`（全流程）/ `stats` / `daily` / `summary` / `kb` / `assess` / `convert` / `kb-sync` / `kb-draft` / `verify`（快照完整性校验：`verify --input <结果目录>`，SHA256 比对篡改/缺失/多余，ok 退出 0 否则 1）/ `monthly`（多群汇总月报 + 员工排名）/ `mcp`（MCP JSON-RPC + REST API）/ `pair --user "A,B"`（双人对话报告）/ `watch`（守护监控：轮询输入目录，文件变化自动重跑）。
+
+常用参数：
+| 参数 | 作用 |
+|---|---|
+| `--staff all / "张三,李四" / 名单.txt` | 员工名单（三种写法，见下节） |
+| `--active-days N` | 活跃窗口：只处理最近 N 天消息（0=全部） |
+| `--keep-snapshots N` | archive 快照保留 N 份（0=不清理） |
+| `--interval N` | `watch` 轮询间隔秒数（默认 60） |
+| `--db PATH` | `mcp` 的 SQLite 库路径（缺省内存库） |
 
 ## 员工名单（--staff，一个参数三种写法）
 

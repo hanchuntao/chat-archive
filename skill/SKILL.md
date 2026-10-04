@@ -61,6 +61,11 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 | `--search 关键词` | 正则批量检索（第2轮吸收⑩）：业务层多面过滤，输出 `search.csv`（可按发送人/日期过滤，见函数 search_messages） |
 | `--search-bm25` | **混合检索排序**（第3轮吸收 21）：bigram-BM25 + 时间衰减打分，`search.csv` 带 `bm25` 分值列，旧消息自动降权 |
 | `kb-draft` 子命令 | 只跑 FAQ 草稿（第3轮吸收 20）：`chat-archive kb-draft --input <文件> --staff all`，从高频已解决问答起草 `knowledge/faq_drafts.md` + `faq_search_terms.csv`，**人工复核后再入库** |
+| `--active-days N` | **活跃窗口**（第8轮 P2）：只处理最近 N 天消息（0=全部），跑周报/月报时只算当前周期 |
+| `--interval N` | **watch 守护轮询秒数**（第8轮 P2，默认 60） |
+| `pair --user "A,B"` 子命令 | **双人对话报告**（第8轮 P1）：`chat-archive pair --input <文件> --user "张三,李四"` → `pair_report.html`（气泡时间流 + 双方消息数/话题数/最长连续发言/**双向平均回复延迟**） |
+| `mcp` 子命令 | **MCP/REST 服务**（第8轮 P1/P2）：`chat-archive mcp --db <库> --port 8765`，JSON-RPC 或 GET `/api/search?q=` `/api/stats` `/api/health` |
+| `watch` 子命令 | **守护监控**（第8轮 P2）：`chat-archive watch --input <目录> --out <输出> --staff all`，输入文件 mtime 变化自动重跑 |
 
 ## 输出清单（`--out` 目录）
 
@@ -101,6 +106,13 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 | `trend.md` | **周期环比报告**（第3轮吸收 16）：最近两期关键指标对比 + 新冒头问题检测（需历史结果目录 ≥2 期） |
 | `mentions.csv/.md` | **@提及统计**（第4轮吸收）：被 @ 最多的关键对接人识别（@所有人 单列；邮箱/URL 中的 @ 不误报） |
 | `messages.csv` | **扁平消息表**（第4轮吸收）：每行一条有效消息（时间/群/发送人/角色/话题/内容），Excel 透视/筛选；`--mask-all` 时全表脱敏 |
+| `pair_report.html` | **双人对话报告**（第8轮 P1，`pair` 子命令触发）：气泡时间流 + 7 统计卡（含双向平均回复延迟） |
+| `customer_profiles.csv` | **客户画像聚合**（第8轮 P1）：非员工按发送人聚合消息/有效/提问/话题/最后发言/待回复（漏回复优先排序，SOP 提醒） |
+| `*.yml`（各 CSV 伴生） | **YAML 版产物**（第8轮 P2）：零依赖序列化，供配置/文档工具直接消费 |
+| `chatlab_export.jsonl` | **ChatLab 标准导出**（第8轮 P2）：`{id,sender,time,content,type}` 行式，可导入 ChatLab 等分析工具 |
+| `knowledge/quality_scores.csv` | **知识库质量评分**（第8轮 P2）：每条目 0-100 分（问答对数/长度/类型覆盖/链接），降序 |
+| `version.json`（项目根） | **格式适配表**（第8轮 P2）：输入格式/兼容工具/字段映射/DB schema 版本/已知限制 |
+| report.html 模块24 | **高频词云**（第8轮 P2）：按词频缩放的标签云，一眼看群内高频议题 |
 | `out/<日期_时间>_<毫秒>/` | 每次运行的完整结果目录（一份，重跑不覆盖，保留策略见下） |
 
 数据层（CLI）产物：SQLite+FTS5 主库（`archive.db`）、`search` 检索结果（JSON）、`report` 周报（Markdown）。
