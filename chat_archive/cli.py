@@ -15,7 +15,7 @@ from .db import Database
 from .pipeline.ingest import ingest_file
 from .report import generate_report
 from .search import search
-from .stats import stats, keyword_frequency
+from .stats import keyword_frequency, stats
 from .vector import vectorize
 
 

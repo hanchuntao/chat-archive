@@ -104,7 +104,7 @@ def handle(req: dict, db: Database) -> dict:
             return {"jsonrpc": "2.0",
                     "result": {"content": [{"type": "text", "text": text}]},
                     "id": mid}
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return _json_rpc_error(-32603, str(e), mid)
 
     return _json_rpc_error(-32601, f"method not found: {method}", mid)
@@ -174,7 +174,7 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *args):  # noqa: D105
+    def log_message(self, *args):
         pass
 
 

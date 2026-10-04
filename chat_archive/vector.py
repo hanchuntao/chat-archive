@@ -19,7 +19,7 @@ def vectorize(db: Database, *, chat_id: str | None = None,
     except ImportError:
         raise RuntimeError(
             "未安装 chromadb. 请执行: pip install chromadb, 再重试。"
-        )
+        ) from None
 
     where = "chat_id = ?" if chat_id else "1=1"
     params = [chat_id] if chat_id else []
@@ -36,7 +36,6 @@ def vectorize(db: Database, *, chat_id: str | None = None,
          {"sender": r["sender"] or "", "time": r["time"] or "", "type": r["type"] or ""})
         for r in rows if (r["content"] or "").strip()
     ]
-    existing = col.get(ids=[d[0] for d in docs[:batch_size]])["ids"] if docs else []
 
     added = 0
     for i in range(0, len(docs), batch_size):

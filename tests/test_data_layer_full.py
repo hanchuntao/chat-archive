@@ -409,7 +409,7 @@ def test_iter_messages_structures(tmp_path: Path):
     doc = {"content": "single", "sender": "A"}
     assert [m for m in wj._iter_messages(doc)] == [doc]
 
-    with pytest.raises(ValueError, match="顶层结构"):
+    with pytest.raises(TypeError, match="顶层结构"):
         list(wj._iter_messages("not-a-dict"))
 
     # 既不是列表也没有 content → 空

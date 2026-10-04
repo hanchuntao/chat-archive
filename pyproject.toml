@@ -15,3 +15,22 @@ chat-archive = "chat_archive.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["chat_archive*"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+# 显式声明规则集：默认 E/F + 生产常用扩展（I 导入排序 / UP 现代语法 / SIM 简化 /
+# B bugbear / PLW 警告 / C 简化 / TRY 异常 / RUF ruff 专属 / FURB 现代化）
+select = ["E4", "E7", "E9", "F", "I", "UP", "SIM", "B", "PLW", "C4", "TRY", "RUF", "FURB"]
+# 有意豁免（经人工审计）：
+# - BLE001：防御性兜底 except（config 损坏降级 / LLM 降级 / 单产物失败不阻塞主流程），错误均有收集与退出码
+# - DTZ005/006/007：消息记录时间为 naive（导出无时区语义），datetime.now() 仅用于快照命名
+# - S110/S112：try-except pass/continue 为有意跳过非关键产物（评分/词云等失败不影响交付）
+ignore = ["BLE001", "DTZ005", "DTZ006", "DTZ007", "S110", "S112", "RUF001", "RUF002", "RUF003",
+          "RUF005", "TRY003", "TRY300", "PLW0603", "E402", "SIM105"]
+# - SIM105：带注释的 try-except-pass 是有意失败不阻塞的清晰表达，优于 contextlib.suppress
+# - RUF003：注释中文标点（同 RUF001/002 理由）；RUF005：列表拼接风格；TRY003：中文长错误消息合理
+# - PLW0603：模块级全局配置（日志通道/主题表）设计如此；E402：业务脚本模块级条件 import（环境探测）
+# - RUF001/002：中文标点（：，。（））在中文 docstring/字符串中是正确写法，非歧义

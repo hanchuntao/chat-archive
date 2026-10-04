@@ -52,9 +52,7 @@ def is_noise(content: str, min_len: int = 1) -> bool:
         return True
     # 全部 token 均为灌水词(如 "好的，收到"): 按标点/空白切分后逐 token 判定
     tokens = [t for t in _TOKEN_SPLIT_RE.split(s) if t]
-    if tokens and all(t.lower() in _NOISE_WORDS for t in tokens):
-        return True
-    return False
+    return bool(tokens and all(t.lower() in _NOISE_WORDS for t in tokens))
 
 
 def clean_message(m: dict, drop_noise: bool = True) -> tuple[dict | None, str]:

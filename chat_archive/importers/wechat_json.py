@@ -17,10 +17,10 @@
 from __future__ import annotations
 
 import json
-import re
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from ..db import make_msg_id, make_raw_hash
 
@@ -88,12 +88,12 @@ def _normalize_type(value: Any) -> str:
     s = str(value).strip().lower()
     if s in _TYPE_MAP:
         return _TYPE_MAP[s]
-    return s if s else "text"
+    return s or "text"
 
 
 def _read_json(path: str | Path) -> Any:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"JSON 解析失败: {path}: {e}") from e
@@ -104,7 +104,7 @@ def _iter_messages(doc: Any) -> Iterator[dict]:
         yield from doc
         return
     if not isinstance(doc, dict):
-        raise ValueError(f"不支持的 JSON 顶层结构: {type(doc).__name__}, 应为对象或数组")
+        raise TypeError(f"不支持的 JSON 顶层结构: {type(doc).__name__}, 应为对象或数组")
     for k in _LIST_KEYS:
         if isinstance(doc.get(k), list):
             yield from doc[k]

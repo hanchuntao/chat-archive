@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..db import Database
-from ..importers.wechat_json import parse_json
 from ..importers.plain import parse_plain
+from ..importers.wechat_json import parse_json
 from .clean import clean_message
 from .desensitize import Desensitizer, DesensitizeResult
 
@@ -47,7 +47,7 @@ def ingest_file(db: Database, path: str | Path, chat_id: str | None = None,
     db.upsert_chat(cid, None)
     times: list[str] = []
     for m in messages:
-        m_clean, reason = clean_message(m, drop_noise=drop_noise)
+        m_clean, _ = clean_message(m, drop_noise=drop_noise)
         if m_clean is None:
             stats.noise_dropped += 1
             continue

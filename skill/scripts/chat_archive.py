@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Chat Archive CLI — 电商企业微信群/QQ群消息自动化分析与沉淀（Skill 确定性处理层）。
 
 纯标准库实现，无第三方依赖。输入：聊天记录明文文件（TXT/MD/JSON/CSV，
@@ -75,8 +74,11 @@ else:
     _CLI_ROOT = Path(__file__).resolve().parents[2]
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
-from chat_archive.pipeline.desensitize import Desensitizer  # noqa: E402
-from chat_archive.llm import chat_completion, llm_configured  # noqa: E402  (LLM 提炼, 需 pip install requests)
+from chat_archive.llm import (
+    chat_completion,
+    llm_configured,
+)
+from chat_archive.pipeline.desensitize import Desensitizer
 
 _DESENSITIZER = Desensitizer()
 
@@ -100,7 +102,7 @@ def _detect_encoding(path: Path) -> str:
 
 def _open_text_any(path: Path):
     """按探测编码打开文本文件（返回文件对象，逐行迭代，流式不整读）。"""
-    return open(path, "r", encoding=_detect_encoding(path), errors="ignore")
+    return open(path, encoding=_detect_encoding(path), errors="ignore")
 
 
 def _read_text_any(path: Path) -> str:
@@ -119,9 +121,7 @@ def is_noise(s: str) -> bool:
     s = (s or "").strip()
     if not s:
         return True
-    if s in ("[图片]", "[表情]", "[语音]", "[视频]", "[文件]", "[链接]", "[红包]"):
-        return True
-    return False
+    return s in ("[图片]", "[表情]", "[语音]", "[视频]", "[文件]", "[链接]", "[红包]")
 
 
 def mask_pii(text: str) -> str:
@@ -148,9 +148,9 @@ def mask_identity(sender: str, is_staff: bool, staff_ids: set, anon: dict) -> st
 
 # ---------------------------------------------------------------- 口水识别
 FILLER_PATTERNS = [
-    re.compile(r"^(收到|好的|嗯+|哦+|噢+|行|ok|okay|好的呢|好嘞|知道了|了解|没问题|可以|是的|对)$", re.I),
+    re.compile(r"^(收到|好的|嗯+|哦+|噢+|行|ok|okay|好的呢|好嘞|知道了|了解|没问题|可以|是的|对)$", re.IGNORECASE),
     re.compile(r"^[👍🙏🙌😀😄😂🤝👌✅❤️🌹]*$"),
-    re.compile(r"^(收到|好的|嗯|哦|ok|行)[!！。.]*$", re.I),
+    re.compile(r"^(收到|好的|嗯|哦|ok|行)[!！。.]*$", re.IGNORECASE),
 ]
 FILLER_WORDS = ("收到", "好的", "嗯", "哦", "行", "ok", "好嘞", "知道了", "了解", "没问题", "可以", "是的", "对")
 
@@ -205,7 +205,7 @@ def load_config() -> dict:
             sig = (st.st_mtime, st.st_size)
         except OSError:
             sig = (0, 0)
-    if _CONFIG_CACHE is not None and _CONFIG_CACHE_SIG == sig:
+    if _CONFIG_CACHE is not None and sig == _CONFIG_CACHE_SIG:
         return _CONFIG_CACHE
     data: dict = {}
     if cfg_path.exists():
@@ -214,7 +214,7 @@ def load_config() -> dict:
             if isinstance(raw, dict):
                 data = raw
             else:
-                print(f"[警告] config.json 顶层不是对象，已用默认配置", file=sys.stderr)
+                print("[警告] config.json 顶层不是对象，已用默认配置", file=sys.stderr)
         except Exception:
             print(f"[警告] config.json 解析失败，已用默认配置（路径：{cfg_path}）", file=sys.stderr)
     _CONFIG_CACHE, _CONFIG_CACHE_SIG = data, sig
@@ -326,10 +326,10 @@ def _iter_json_array(path: Path, chunk: int = 65536):
                 continue
             try:
                 obj, end = dec.raw_decode(buf, idx)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as e:
                 more = f.read(chunk)
                 if not more:
-                    raise ValueError(f"JSON 数组元素截断（偏移 {idx}）")
+                    raise ValueError(f"JSON 数组元素截断（偏移 {idx}）") from e
                 buf += more
                 continue
             yield obj
@@ -409,8 +409,8 @@ def _parse_json(path: Path) -> list[dict] | None:
     # 对象形式（{...} 包裹数组）→ 整读（该结构无法流式）
     try:
         data = json.loads(_read_text_any(path))
-    except Exception:
-        raise ValueError(f"JSON 解析失败: {path.name}")
+    except Exception as e:
+        raise ValueError(f"JSON 解析失败: {path.name}") from e
     if isinstance(data, dict):
         for k in ("msgList", "data", "messages", "rows", "msgs"):
             if isinstance(data.get(k), list):
@@ -434,7 +434,7 @@ def _parse_csv(path: Path) -> list[dict] | None:
 
     def col(*names):
         for n in names:
-            for h, orig in zip(header, reader.fieldnames):
+            for h, orig in zip(header, reader.fieldnames, strict=False):
                 if h == n or n in h:
                     return orig
         return None
@@ -529,7 +529,7 @@ def _convert_via_tool(src: Path, tool_cmd: str) -> list[dict]:
     out_dir = src.with_name(src.name + "_out")
     out_dir.mkdir(exist_ok=True)
     cmd = tool_cmd.replace("{input}", _quote_for_shell(str(src))).replace("{dir}", _quote_for_shell(str(out_dir)))
-    proc = subprocess.run(_split_cmd(cmd), capture_output=True, text=True, timeout=600)
+    proc = subprocess.run(_split_cmd(cmd), capture_output=True, text=True, timeout=600, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"转换工具失败(exit={proc.returncode}): {proc.stderr[:300]}")
     merged = []
@@ -557,8 +557,8 @@ def load_staff(staff_arg: str, staff_file: str) -> set[str]:
     if staff_arg and staff_arg.strip().lower() != "all":
         maybe_file = Path(staff_arg)
         if maybe_file.is_file():
-            for line in _read_text_any(maybe_file).splitlines():
-                line = line.strip()
+            for line_raw in _read_text_any(maybe_file).splitlines():
+                line = line_raw.strip()
                 if line and not line.startswith("#"):
                     names.add(_split_aliases(line)[0])
         else:
@@ -566,8 +566,8 @@ def load_staff(staff_arg: str, staff_file: str) -> set[str]:
                 if n.strip():
                     names.add(n.strip())
     if staff_file:
-        for line in _read_text_any(Path(staff_file)).splitlines():
-            line = line.strip()
+        for line_raw in _read_text_any(Path(staff_file)).splitlines():
+            line = line_raw.strip()
             if line and not line.startswith("#"):
                 names.add(_split_aliases(line)[0])
     return names
@@ -578,8 +578,8 @@ def load_staff_aliases(staff_arg: str, staff_file: str) -> dict[str, str]:
     aliases: dict[str, str] = {}
 
     def _scan(path: Path):
-        for line in _read_text_any(path).splitlines():
-            line = line.strip()
+        for line_raw in _read_text_any(path).splitlines():
+            line = line_raw.strip()
             if line and not line.startswith("#"):
                 name, als = _split_aliases(line)
                 for a in als:
@@ -801,7 +801,7 @@ def build_knowledge(msgs: list[dict], mask: bool = True) -> tuple[list[dict], st
               f"info_types: [{', '.join(infos)}]", "---", ""]
         body = fm + [f"# {e['title']}", ""]
         for qa in e["qa"]:
-            body += [f"## 问答示例（已脱敏）", "", f"问：{qa['q']}", f"答：{qa['a']}", ""]
+            body += ["## 问答示例（已脱敏）", "", f"问：{qa['q']}", f"答：{qa['a']}", ""]
         e["content"] = "\n".join(body)
         e["filename"] = t.replace("/", "_").replace("\\", "_")  # 安全文件名
         entry_list.append(e)
@@ -1003,7 +1003,7 @@ def run_assessment(msgs: list[dict], rules: list[dict], scheme: dict) -> tuple[l
 # 绝不原样进报表；查不到实名时用「昵称（ID 后 4 位）」区分。员工与别名匹配到的昵称不处理。
 LOWINFO_NAME_RE = re.compile(
     r"^(nil|null|test|admin|user|undefined|unknown|wxid_?[\w]*|[\u4e00-\u9fa5]{0,2}|"
-    r"[\W_]{1,8}|[^\u4e00-\u9fa5A-Za-z0-9]{1,8})$", re.I)
+    r"[\W_]{1,8}|[^\u4e00-\u9fa5A-Za-z0-9]{1,8})$", re.IGNORECASE)
 LOWINFO_WORDS = {"nil", "null", "test", "admin", "user", "undefined", "unknown", "微信", "weixin"}
 
 def customer_profiles(msgs: list[dict], unanswered: list[dict]) -> list[dict]:
@@ -1050,9 +1050,7 @@ def is_lowinfo_name(s: str) -> bool:
     if LOWINFO_NAME_RE.match(s):
         return True
     # 单 emoji
-    if all(ch in "👍🙏🙌😀😄😂🤝👌✅❤️🌹⭐✨😊🥰😍😘🤗😎🤔😳😭😡" for ch in s):
-        return True
-    return False
+    return all(ch in "👍🙏🙌😀😄😂🤝👌✅❤️🌹⭐✨😊🥰😍😘🤗😎🤔😳😭😡" for ch in s)
 
 
 def resolve_ambiguous_names(msgs: list[dict], staff: set[str], alias_map: dict[str, str]) -> int:
@@ -1210,8 +1208,8 @@ def sentiment_stats(msgs: list[dict]) -> dict:
         return "pos" if pos > neg else ("neg" if neg > pos else "neu")
 
     total: Counter = Counter()
-    daily: "OrderedDict[str, dict]" = OrderedDict()
-    member: "OrderedDict[str, Counter]" = OrderedDict()
+    daily: OrderedDict[str, dict] = OrderedDict()
+    member: OrderedDict[str, Counter] = OrderedDict()
     for m in msgs:
         c = _text_plain(m["content"])
         if not c:
@@ -1244,7 +1242,7 @@ def member_summary(msgs: list[dict], act_rows: list[dict]) -> list[dict]:
     发言数/有效/口水率/活跃天数/字数/被@次数/情感/首末发言/高峰时段/熬夜。"""
     from collections import OrderedDict
     act = {r["userid"]: r for r in act_rows}
-    per: "OrderedDict[str, dict]" = OrderedDict()
+    per: OrderedDict[str, dict] = OrderedDict()
     for m in msgs:
         r = per.setdefault(m["sender"], {"userid": m["sender"], "sent": 0, "chars": 0,
                                          "mentioned": 0, "first": "", "last": "",
@@ -1284,7 +1282,7 @@ def member_summary(msgs: list[dict], act_rows: list[dict]) -> list[dict]:
 def daily_activity(msgs: list[dict]) -> list[dict]:
     """每日消息量日历：日期/消息/有效/参与人数/积极/消极。纯标准库。"""
     from collections import OrderedDict
-    days: "OrderedDict[str, dict]" = OrderedDict()
+    days: OrderedDict[str, dict] = OrderedDict()
     for m in msgs:
         d = m["sent_at"].strftime("%Y-%m-%d")
         dd = days.setdefault(d, {"date": d, "total": 0, "effective": 0, "senders": set(), "pos": 0, "neg": 0})
@@ -1319,7 +1317,7 @@ def reply_pairs(msgs: list[dict], window_min: int = 10) -> list[dict]:
     时间窗内相邻两条发言视为「后一人回复前一人的发言」，统计配对数与平均响应分钟。"""
     from collections import OrderedDict
     ordered = sorted(msgs, key=lambda m: m["sent_at"])
-    pairs: "OrderedDict[tuple, dict]" = OrderedDict()
+    pairs: OrderedDict[tuple, dict] = OrderedDict()
     prev = None
     for m in ordered:
         if prev is not None and m["sender"] != prev["sender"]:
@@ -1331,7 +1329,7 @@ def reply_pairs(msgs: list[dict], window_min: int = 10) -> list[dict]:
                 p["resp"].append(round(delta, 1))
         prev = m
     rows = []
-    for k, p in pairs.items():
+    for _, p in pairs.items():
         rows.append({"from": p["from"], "to": p["to"], "count": p["count"],
                      "avg_resp_min": round(sum(p["resp"]) / len(p["resp"]), 1)})
     return sorted(rows, key=lambda x: -x["count"])[:50]
@@ -1346,8 +1344,8 @@ def keywords_trend(msgs: list[dict], top_n: int = 15) -> list[dict]:
         for seg in re.findall(r'[\u4e00-\u9fff]{2,6}', _text_plain(m["content"])):
             if seg not in STOP_WORDS:
                 glob[seg] += 1
-    top = set(w for w, _ in glob.most_common(top_n))
-    by_week: "OrderedDict[str, Counter]" = OrderedDict()
+    top = {w for w, _ in glob.most_common(top_n)}
+    by_week: OrderedDict[str, Counter] = OrderedDict()
     for m in msgs:
         wk = m["sent_at"].strftime("%Y-W%W")
         c2 = _text_plain(m["content"])
@@ -1467,7 +1465,7 @@ def run_pair(input_path: str, user_a: str, user_b: str, out_dir: Path,
     lat_ba = _reply_latency(a, b)   # A 发言后 B 平均回复
     lat_ab = _reply_latency(b, a)   # B 发言后 A 平均回复
     longest_a = longest_b = 0
-    cur = prev = None
+    prev = None
     cnt = 0
     for m in merged:
         if m["sender"] == user_a:
@@ -1679,8 +1677,13 @@ def notify_webhook(events: list[dict], wh: dict) -> str:
     """P0-4 主动触达：钉钉/企微/generic webhook POST（stdlib urllib）。返回结果描述。"""
     if not events or not wh.get("enabled") or not wh.get("url"):
         return "Webhook 未启用或无事件，跳过"
-    import json as _j, time as _t, hashlib as _h, hmac as _hm, urllib.request as _ur
-    import base64 as _b, urllib.parse as _up
+    import base64 as _b
+    import hashlib as _h
+    import hmac as _hm
+    import json as _j
+    import time as _t
+    import urllib.parse as _up
+    import urllib.request as _ur
     url = wh["url"]
     secret = wh.get("secret") or ""
     wtype = (wh.get("type") or "generic").lower()
@@ -1751,7 +1754,7 @@ def notify_all(fups: list[dict], cfg: dict) -> str:
     em = wh.get("email") or {}
     if em.get("enabled"):
         out.append(notify_email(events, em))
-    return "；".join(out) if out else "Webhook/邮件均未启用，跳过推送（已收集 {} 条事件）".format(len(events))
+    return "；".join(out) if out else f"Webhook/邮件均未启用，跳过推送（已收集 {len(events)} 条事件）"
 
 
 # ---------------------------------------------------------------- 丢单/商机信号（P0-6）
@@ -1832,8 +1835,8 @@ def build_assessment_notes(msgs: list[dict], results: list[dict], unanswered: li
         eff = [m for m in msgs if m["is_staff"] and m["sender"] == uid
                and classify(m["content"]) == "substantive"]
         notes += [f"## {uid}", "",
-                  f"- 机器分：{r['final_score']}（基准 {r['base_score']}；超时 {r['timeout_count']} 次、"
-                  f"漏回复 {r['unanswered_count']} 条、违规 {r['violation_count']} 次、口水率 {r['filler_rate']}%）", ""]
+                  (f"- 机器分：{r['final_score']}（基准 {r['base_score']}；超时 {r['timeout_count']} 次、"
+                   f"漏回复 {r['unanswered_count']} 条、违规 {r['violation_count']} 次、口水率 {r['filler_rate']}%）"), ""]
         if eff:
             notes.append("**证据引用（有效回复示例，按时间）**：")
             for m in eff[:5]:
@@ -1847,7 +1850,7 @@ def build_assessment_notes(msgs: list[dict], results: list[dict], unanswered: li
             notes.append("**需人工判断**（这些客户提问直到群末无实质回复，是否丢单需核实）：")
             for u in judged[:5]:
                 notes.append(f"- [{u['sent_at'].strftime('%m-%d %H:%M')}] {u['content'][:120]}")
-        notes += ["", f"**Rating（主管填写）**：____", ""]
+        notes += ["", "**Rating（主管填写）**：____", ""]
     return "\n".join(notes)
 
 
@@ -2301,7 +2304,7 @@ def build_growth_report(state_dir: Path) -> str:
         eff = int(m_eff.group(1)) if m_eff else 0
         first = re.search(r"first_seen: (\S+)", txt)
         last = re.search(r"last_seen: (\S+)", txt)
-        moments = [l.strip()[2:] for l in txt.splitlines() if l.strip().startswith("- ")]
+        moments = [ln.strip()[2:] for ln in txt.splitlines() if ln.strip().startswith("- ")]
         out += [f"## {name}", "",
                 f"- **观察周期**：{first.group(1) if first else '?'} ~ {last.group(1) if last else '?'}",
                 f"- **发言概况**：累计 {total} 条（有效 {eff}，有效率 {round(eff / total * 100) if total else 0}%）",
@@ -2587,7 +2590,7 @@ def search_messages(msgs: list[dict], query: str = "", sender: str = "", date_fr
     q = re.escape(query) if query else ""
     out = []
     for m in sorted(msgs, key=lambda x: x["sent_at"], reverse=True):
-        if query and not re.search(q, m["content"], re.I):
+        if query and not re.search(q, m["content"], re.IGNORECASE):
             continue
         if sender and m["sender"] != sender:
             continue
@@ -2640,8 +2643,11 @@ def funnel_analysis(sessions: list[dict]) -> list[dict]:
 def level_problems(insights: list[dict], cfg: dict | None = None) -> list[dict]:
     """问题分级量化 P0-P3（P2-19）：可解释阈值打标签，老板先看最该解决的。"""
     lp = (cfg or {}).get("problem_level", {}) if isinstance(cfg, dict) else {}
-    p0_n = int(lp.get("p0_count", 10)); p1_n = int(lp.get("p1_count", 5)); p2_n = int(lp.get("p2_count", 3))
-    p0_kw = lp.get("p0_kw", ["投诉", "差评"]); p1_kw = lp.get("p1_kw", ["退款", "赔偿", "损失"])
+    p0_n = int(lp.get("p0_count", 10))
+    p1_n = int(lp.get("p1_count", 5))
+    p2_n = int(lp.get("p2_count", 3))
+    p0_kw = lp.get("p0_kw", ["投诉", "差评"])
+    p1_kw = lp.get("p1_kw", ["退款", "赔偿", "损失"])
     out = []
     for r in insights:
         c = r["count"]
@@ -2787,12 +2793,12 @@ def clean_training(train_lines: str, rules: list[dict]) -> tuple[list[dict], lis
     """训练样本级清洗（P1-15）：去重 / 低质过短过滤 / 红线词过滤 / 长度截断。"""
     seen: set[tuple[str, str]] = set()
     out, report = [], []
-    for l in train_lines.splitlines():
-        l = l.strip()
-        if not l:
+    for line_raw in train_lines.splitlines():
+        ln = line_raw.strip()
+        if not ln:
             continue
         try:
-            d = json.loads(l)
+            d = json.loads(ln)
         except Exception:
             continue
         q, a = (d.get("input") or "").strip(), (d.get("output") or "").strip()
@@ -2877,8 +2883,7 @@ def mentions_stats(msgs: list[dict]) -> list[dict]:
             r["count"] += 1
             if m["sender"] not in r["by_who"]:
                 r["by_who"].append(m["sender"])
-            if m["sent_at"].isoformat() > r["last_time"]:
-                r["last_time"] = m["sent_at"].isoformat()
+            r["last_time"] = max(r["last_time"], m["sent_at"].isoformat())
     for r in agg.values():
         r["by_who"] = "、".join(r["by_who"][:6]) + ("…" if len(r["by_who"]) > 6 else "")
     return list(agg.values())
@@ -2981,7 +2986,7 @@ def write_csv(path: Path, rows: list[dict]):
     if not rows:
         path.write_text("(无数据)\n", encoding="utf-8")
         return
-    fieldnames = list(dict.fromkeys(k for r in rows for k in r.keys()))
+    fieldnames = list(dict.fromkeys(k for r in rows for k in r))
     with open(path, "w", encoding="utf-8", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -3060,50 +3065,6 @@ def kb_score(entries: list[dict]) -> list[dict]:
     return out
 
 
-    kb_dir = run_dir / "knowledge"
-    kb_dir.mkdir(exist_ok=True)
-    entries, train, onboarding = build_knowledge(msgs, mask=not no_mask)
-    for e in entries:
-        (kb_dir / f"{e['filename']}.md").write_text(e["content"], encoding="utf-8")
-    try:
-        write_csv(kb_dir / "quality_scores.csv", kb_score(entries))
-    except Exception:
-        pass  # 评分失败不影响主流程
-    ai_n = 0
-    if use_llm:
-        try:
-            ai_kb = ai_build_knowledge(entries)
-        except Exception as e:
-            ai_kb = {}
-            print(f"  [LLM 知识库失败，降级规则版] {e}")
-        for fn, md in ai_kb.items():
-            (kb_dir / f"{fn}.md").write_text(md, encoding="utf-8")
-        ai_n = len(ai_kb)
-    (kb_dir / "training.jsonl").write_text(train + ("\n" if train else ""), encoding="utf-8")
-    (kb_dir / "onboarding.md").write_text(onboarding, encoding="utf-8")
-    # 训练样本级清洗（P1-15）：去重 / 低质过滤 / 红线词过滤 → training_clean.jsonl
-    try:
-        clean_rows, clean_report = clean_training(train, rules)
-        if clean_rows:
-            (kb_dir / "training_clean.jsonl").write_text(
-                "\n".join(json.dumps(x, ensure_ascii=False) for x in clean_rows) + "\n", encoding="utf-8")
-        write_csv(kb_dir / "training_clean_report.csv", clean_report)
-    except Exception as e:
-        errors.append(f"训练集清洗失败: {e}")
-        print(f"[错误] 训练集清洗失败：{e}")
-    # FAQ 草稿（P2-20）：高频已解决问答 → Direct Answer/Details/Related + 搜索词表
-    try:
-        draft_md, terms = faq_draft(entries, faq_min)
-        (kb_dir / "faq_drafts.md").write_text(draft_md + ("\n" if draft_md else ""), encoding="utf-8")
-        write_csv(kb_dir / "faq_search_terms.csv", terms)
-    except Exception as e:
-        errors.append(f"FAQ 草稿失败: {e}")
-        print(f"[错误] FAQ 草稿失败：{e}")
-    n_train = len([l for l in train.splitlines() if l])
-    return len(entries), ai_n, n_train
-
-
-
 def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_llm: bool,
                       no_mask: bool, faq_min: int, errors: list[str]) -> tuple[int, int, int]:
     """知识库构建 + 训练清洗 + FAQ 草稿（main 步骤 4 与 kb-draft 子命令共用）。
@@ -3149,7 +3110,7 @@ def _build_kb_section(run_dir: Path, msgs: list[dict], rules: list[dict], use_ll
     except Exception as e:
         errors.append(f"FAQ 草稿失败: {e}")
         print(f"[错误] FAQ 草稿失败：{e}")
-    n_train = len([l for l in train.splitlines() if l])
+    n_train = len([x for x in train.splitlines() if x])
     return len(entries), ai_n, n_train
 
 
@@ -3475,10 +3436,10 @@ def main():
         except Exception as e:
             leads = []
             print(f"  [LLM 商机线索失败，跳过] {e}")
-        for l in leads:
-            fups.append({"group": l.get("group", ""), "content": l["content"], "assignee": "",
-                         "due": "", "source": l.get("who", ""), "time": l.get("time", ""),
-                         "type": f"商机线索（{l.get('hint', '')}）"})
+        for lead in leads:
+            fups.append({"group": lead.get("group", ""), "content": lead["content"], "assignee": "",
+                         "due": "", "source": lead.get("who", ""), "time": lead.get("time", ""),
+                         "type": f"商机线索（{lead.get('hint', '')}）"})
         if leads:
             print(f"  [LLM 商机线索] 提取 {len(leads)} 条")
     write_csv(run_dir / "followups.csv", fups)
@@ -3579,7 +3540,7 @@ def main():
         write_csv(run_dir / "keywords_trend.csv", keywords_trend(msgs))
         write_csv(run_dir / "voice_pending.csv", voice_pending(msgs))
         write_csv(run_dir / "media_archive.csv", media_archive(msgs))
-        print(f"[9/9] 年度与消息分析（高频词/情感/成员/每日量/类型/互动/趋势/语音/媒体）→ keywords.csv / sentiment.json / members.csv / activity_daily.csv / message_types.csv / interactions.csv / keywords_trend.csv / voice_pending.csv / media_archive.csv")
+        print("[9/9] 年度与消息分析（高频词/情感/成员/每日量/类型/互动/趋势/语音/媒体）→ keywords.csv / sentiment.json / members.csv / activity_daily.csv / message_types.csv / interactions.csv / keywords_trend.csv / voice_pending.csv / media_archive.csv")
     except Exception as e:
         errors.append(f"年度分析失败: {e}")
         print(f"[错误] 年度分析失败：{e}")
@@ -3719,15 +3680,15 @@ def main():
             fun_md += ["", f"**卡点提示**：{len(open_st)} 个会话未成交（询价 {sum(1 for r in open_st if r['stage']=='询价')}、催拍/付款咨询 {sum(1 for r in open_st if r['stage']=='催拍/付款咨询')}、下单未付款 {sum(1 for r in open_st if r['stage']=='下单未付款')}）", ""]
         (run_dir / "funnel.md").write_text("\n".join(fun_md) + "\n", encoding="utf-8")
         sop_md = ["# 销售 SOP 动作窗合规（第2轮吸收④）", "",
-                  f"- 规则：首响 ≤{sop_cfg.get('first_reply_sec', 20)}s；问价后 {sop_cfg.get('followup_min', 15)}min 内跟进；"
-                  f"犹豫后 {sop_cfg.get('retention_min', 2)}min 内挽留；意向 {sop_cfg.get('prompt_min', 10)}min 内催拍", ""]
+                  (f"- 规则：首响 ≤{sop_cfg.get('first_reply_sec', 20)}s；问价后 {sop_cfg.get('followup_min', 15)}min 内跟进；"
+                   f"犹豫后 {sop_cfg.get('retention_min', 2)}min 内挽留；意向 {sop_cfg.get('prompt_min', 10)}min 内催拍"), ""]
         if sop_rows:
             for r in sop_rows:
                 sop_md.append(f"- **{r['rule']}**：{r['target']}（{r['time'][:16].replace('T', ' ')}）{r['detail']}：{r['content']}")
         else:
             sop_md.append("（本期无 SOP 违规）")
         (run_dir / "sop_compliance.md").write_text("\n".join(sop_md) + "\n", encoding="utf-8")
-        print(f"[15/15] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv / funnel.csv / timeline.json")
+        print("[15/15] 会话级经营分析 → sessions.csv / pending.csv / satisfaction.csv / sla.csv / health.csv / sop_compliance.csv / funnel.csv / timeline.json")
     except Exception as e:
         errors.append(f"经营分析失败: {e}")
         print(f"[错误] 经营分析失败：{e}")
@@ -3750,7 +3711,7 @@ def main():
         cfg12 = load_config()
         mem_dir = out / (cfg12.get("memory", {}).get("dir", "state") if isinstance(cfg12, dict) else "state")
         write_csv(run_dir / "commitment_review.csv", commitment_review(fups, mem_dir))
-        print(f"[17/17] 承诺到期复核 → commitment_review.csv")
+        print("[17/17] 承诺到期复核 → commitment_review.csv")
     except Exception as e:
         errors.append(f"承诺复核失败: {e}")
         print(f"[错误] 承诺复核失败：{e}")

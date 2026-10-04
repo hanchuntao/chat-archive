@@ -63,7 +63,7 @@ def _norm_time(v) -> str | None:
     return _parse_dt(str(v))
 
 
-def _parse_line(line: str) -> tuple[str, str, str] | None:
+def _parse_line(line: str) -> tuple[str, str, str | None] | None:
     """解析单行，返回 (time, sender, content)；无法识别返回 None。"""
     line = line.strip()
     if not line or _RE_GROUP_HEAD.match(line):
@@ -110,12 +110,15 @@ def _parse_csv_rows(path: Path) -> list[dict]:
             if not col_c:
                 return out
             for row in reader:
-                content = (row.get(col_c) or "").strip()
-                if not content:
-                    continue
-                sender = (row.get(col_s) or "").strip() if col_s else None
-                t = _norm_time(row.get(col_t)) if col_t else None
-                out.append({"time": t, "sender": sender, "content": content})
+                try:
+                    content = (row.get(col_c) or "").strip()
+                    if not content:
+                        continue
+                    sender = (row.get(col_s) or "").strip() if col_s else None
+                    t = _norm_time(row.get(col_t)) if col_t else None
+                    out.append({"time": t, "sender": sender, "content": content})
+                except Exception:
+                    continue  # 单行脏数据跳过，不丢弃整个文件
     except Exception:
         return out
     return out

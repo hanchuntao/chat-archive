@@ -44,9 +44,9 @@ def _extract_links(rows: list[dict]) -> list[str]:
     links: list[str] = []
     seen: set[str] = set()
     for r in rows:
-        for u in _URL_RE.findall(r.get("content") or ""):
+        for url in _URL_RE.findall(r.get("content") or ""):
             # 中文连词/标点紧随 URL 时截断（"…com/x和…"、"…com/y。"）
-            u = re.sub(r"(?:还有|以及|或者|和|与|或|跟)[，。；;、,)]*>?$", "", u)
+            u = re.sub(r"(?:还有|以及|或者|和|与|或|跟)[，。；;、,)]*>?$", "", url)
             u = u.rstrip("，。；、,;)]}>")
             if u not in seen:
                 seen.add(u)
