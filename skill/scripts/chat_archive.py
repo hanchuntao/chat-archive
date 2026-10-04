@@ -1206,6 +1206,128 @@ def media_archive(msgs: list[dict]) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------- P0-5 多群汇总月报 + 员工排名
+def _group_name_of(gd: Path) -> str:
+    """从结果目录推断群名：优先 followups.csv 的 group 列，其次 manifest command 输入文件名。"""
+    try:
+        f = gd / "followups.csv"
+        if f.exists():
+            for r in _read_csv_rows(f):
+                g = (r.get("group") or "").strip()
+                if g:
+                    return g
+    except Exception:
+        pass
+    try:
+        m = json.loads((gd / "manifest.json").read_text(encoding="utf-8"))
+        cmd = m.get("command") or ""
+        import re as _re
+        mm = _re.search(r"--input[= ]\S+", cmd)
+        if mm:
+            return Path(mm.group(0).split("=")[-1].strip()).stem
+    except Exception:
+        pass
+    return gd.name
+
+
+def run_monthly(group_dirs: list[Path], out_dir: Path, title: str = "") -> Path:
+    """P0-5 多群汇总月报：聚合各群统计 + 跨群员工考核排名，输出 monthly_report.html / staff_ranking.csv。"""
+    from html import escape as _esc
+    groups = []
+    ranking: dict = {}
+    for gd in group_dirs:
+        gname = _group_name_of(gd)
+        stats = _read_csv_rows(gd / "effective_stats.csv")
+        fups = _read_csv_rows(gd / "followups.csv")
+        assess = _read_csv_rows(gd / "assessment.csv")
+        kb_dir = gd / "knowledge"
+        kb_n = sum(1 for p in kb_dir.glob("*.md")) if kb_dir.is_dir() else 0
+        total_sent = sum(int(r.get("sent", 0) or 0) for r in stats)
+        total_eff = sum(int(r.get("effective", 0) or 0) for r in stats)
+        n_risk = sum(1 for f in fups if any(
+            k in (f.get("type") or "") for k in ("漏回复", "询价", "承诺", "商机")))
+        n_viol = sum(int(r.get("violation_count", 0) or 0) for r in assess)
+        groups.append({"group": gname, "senders": len(stats), "sent": total_sent,
+                       "effective": total_eff, "risk": n_risk, "kb": kb_n, "viol": n_viol})
+        for r in assess:
+            uid = r.get("userid") or "?"
+            d = ranking.setdefault(uid, {"userid": uid, "effective": 0, "viol": 0, "score": 0, "groups": 0})
+            d["effective"] += int(r.get("effective", 0) or 0)
+            d["viol"] += int(r.get("violation_count", 0) or 0)
+            try:
+                d["score"] += float(r.get("final_score", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            d["groups"] += 1
+    for d in ranking.values():
+        if d["groups"]:
+            d["score"] = round(d["score"] / d["groups"], 1)
+    rows_rank = sorted(ranking.values(), key=lambda d: -d["effective"])
+    write_csv(out_dir / "staff_ranking.csv", rows_rank)
+    (out_dir / "staff_ranking.csv").write_text(
+        "userid,effective,viol,score,groups\n" + "\n".join(
+            f"{r['userid']},{r['effective']},{r['viol']},{r['score']},{r['groups']}"
+            for r in rows_rank) + "\n", encoding="utf-8")
+
+    total = {"sent": sum(g["sent"] for g in groups), "eff": sum(g["effective"] for g in groups),
+             "risk": sum(g["risk"] for g in groups), "kb": sum(g["kb"] for g in groups),
+             "viol": sum(g["viol"] for g in groups)}
+    today = datetime.now().strftime("%Y-%m-%d %H:%M")
+    tt = title or "跨群经营月报"
+    gtr = "".join(
+        f"<tr><td>{_esc(g['group'])}</td><td class='num'>{g['senders']}</td><td class='num'>{g['sent']}</td>"
+        f"<td class='num'>{g['effective']}</td><td class='num'>{g['viol']}</td>"
+        f"<td class='num'>{g['risk']}</td><td class='num'>{g['kb']}</td></tr>"
+        for g in sorted(groups, key=lambda x: -x["risk"]))
+    rtr = "".join(
+        f"<tr><td>{_esc(r['userid'])}</td><td class='num'>{r['effective']}</td>"
+        f"<td class='num'>{r['viol']}</td><td class='num'>{r['score']}</td><td class='num'>{r['groups']}</td></tr>"
+        for r in rows_rank[:50])
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_esc(tt)}</title>
+<style>
+body{{font-family:-apple-system,'PingFang SC','Microsoft YaHei',sans-serif;background:#f5f6f8;color:#1f2933;margin:0;line-height:1.6;font-size:14px}}
+.wrap{{max-width:1000px;margin:0 auto;padding:32px 20px}}
+h1{{font-size:24px;margin:0 0 4px}} .sub{{color:#6b7280;font-size:13px;margin:0 0 18px}}
+.cards{{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px}}
+.card{{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px}}
+.card .n{{font-size:22px;font-weight:700}} .card .k{{font-size:12px;color:#6b7280}}
+.card.hot{{border-color:#f3c6c6;background:#fdecec}} .card.hot .n{{color:#b91c1c}}
+table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:8px;margin-bottom:18px;table-layout:fixed}}
+th,td{{padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:left;font-size:13px}}
+th{{background:#fafbfc;color:#6b7280;font-size:12px}}
+td.num{{font-variant-numeric:tabular-nums}}
+h2{{font-size:16px;margin:18px 0 8px}}
+footer{{text-align:center;color:#6b7280;font-size:12px;margin-top:20px}}
+@media (max-width:760px){{.cards{{grid-template-columns:repeat(2,1fr)}}}}
+</style></head>
+<body><div class="wrap">
+<h1>{_esc(tt)}</h1>
+<p class="sub">chat-archive 多群汇总 · {today} · 共 {len(groups)} 个群 · 数据已清洗脱敏仅存本机</p>
+<div class="cards">
+<div class="card"><div class="n">{total['sent']}</div><div class="k">消息总数</div></div>
+<div class="card"><div class="n">{total['eff']}</div><div class="k">有效回复</div></div>
+<div class="card"><div class="n">{total['risk']}</div><div class="k">丢单风险</div></div>
+<div class="card"><div class="n">{total['kb']}</div><div class="k">知识条目</div></div>
+<div class="card {'hot' if total['viol'] else ''}"><div class="n">{total['viol']}</div><div class="k">违规次数</div></div>
+</div>
+<h2>各群经营汇总（按丢单风险降序）</h2>
+<table><colgroup><col style="width:34%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"></colgroup>
+<thead><tr><th>群</th><th>员工数</th><th>消息</th><th>有效</th><th>违规</th><th>丢单风险</th><th>知识条目</th></tr></thead>
+<tbody>{gtr}</tbody></table>
+<h2>员工考核排名（跨群聚合，按有效回复降序）</h2>
+<table><colgroup><col style="width:40%"><col style="width:15%"><col style="width:15%"><col style="width:15%"><col style="width:15%"></colgroup>
+<thead><tr><th>员工</th><th>有效回复</th><th>违规</th><th>平均得分</th><th>涉及群数</th></tr></thead>
+<tbody>{rtr}</tbody></table>
+<footer>由 chat-archive 本地生成 · 仅供内部经营参考</footer>
+</div></body></html>"""
+    dest = out_dir / "monthly_report.html"
+    dest.write_text(html, encoding="utf-8")
+    return dest
+
+
 # ---------------------------------------------------------------- P0-4 主动触达（Webhook/邮件）
 def collect_notify_events(fups: list[dict], cfg: dict) -> list[dict]:
     """从待跟进事项提取需主动触达的事件（丢单/商机/待跟进）。"""
@@ -2600,7 +2722,7 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 def main():
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
-                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify"],
+                    choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly"],
                     help="缺省=all 全流程；convert=仅转换加密备份为明文；kb-sync=知识库同步（本地+ima）；kb-draft=仅生成 FAQ 草稿")
     ap.add_argument("--input", default="", help="输入文件或目录（明文或加密备份，kb-sync 无需；缺省读 config.json defaults.input）")
     ap.add_argument("--staff", default="", help="员工名单三种写法：逗号名单（张三,李四）、all（全部发送人视为员工）、名单文件路径（每行一个）；不传时所有人视为客户")
@@ -2622,6 +2744,7 @@ def main():
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
     ap.add_argument("--search", default="", help="正则批量检索关键词（业务层多面过滤，输出 search.csv）")
+    ap.add_argument("--groups", default="", help="monthly：多个群结果目录，逗号分隔（各目录为一次 all 运行的输出）")
     ap.add_argument("--search-bm25", action="store_true",
                     help="检索排序用 bigram-BM25 + 时间衰减（P2-21 混合检索），默认正则命中即出")
     args = ap.parse_args()
@@ -2645,6 +2768,21 @@ def main():
     if args.task == "convert":
         items, fmts = load_input(args.input, args.tool_cmd)
         print(f"转换完成：{len(items)} 条消息（格式: {fmts}）")
+        return
+
+    if args.task == "monthly":
+        if not args.groups:
+            print("[错误] monthly 需要 --groups \"目录A,目录B,...\"（每个目录为一次 all 运行的结果）", file=sys.stderr)
+            sys.exit(1)
+        dirs = [Path(x.strip()) for x in args.groups.split(",") if x.strip()]
+        missing = [str(d) for d in dirs if not d.exists()]
+        if missing:
+            print(f"[错误] 目录不存在：{missing}", file=sys.stderr)
+            sys.exit(1)
+        out_dir = Path(args.out)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dest = run_monthly(dirs, out_dir, title=args.title if hasattr(args, "title") else "")
+        print(f"多群月报已生成：{dest}（{len(dirs)} 个群，员工排名 staff_ranking.csv）")
         return
 
     if args.task == "kb-sync":
