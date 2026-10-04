@@ -208,6 +208,14 @@ chat-archive
 - 可选依赖：LLM 提炼 `pip install requests`；本地向量检索 `pip install chromadb`。
 - 加密备份转换（`--tool-cmd`）在 Windows 上需指向 `wechat-cli.exe` 类工具，命令用双引号包裹参数。
 
+**项目内置的跨平台兼容（无需你额外操作）**：
+- 所有文件读写显式 `encoding="utf-8"`（AST 审计过），微信消息里的 emoji/生僻字在 Windows（默认 GBK）也不会写崩。
+- CLI 入口在 Windows 自动把 stdout/stderr 重配置为 UTF-8（`errors="replace"`），控制台/管道输出不因 GBK 抛异常。
+- 调用外部转换工具（`--tool-cmd`）时 subprocess 显式以 UTF-8 解码，Windows 上不乱码。
+- `_split_cmd` 平台感知：macOS/Linux 用 shell 语义分词，Windows 用 `shlex` 语义（兼容双引号包裹的整条命令）。
+- 路径全部用 `pathlib.Path`，正斜杠/反斜杠自动适配；`bin/chat-archive.cmd` 已带 `chcp 65001`。
+- PyInstaller 打包支持 Windows（CI 产物 `chat-archive-win64.zip`，onedir 免安装解压即用）。
+
 ## Linux / CentOS 使用
 
 CentOS 7/8 默认 Python 版本过低（3.6/3.8），**本项目要求 Python ≥ 3.10**（用了 `dict[str,...]`、`X | None` 等新语法）：

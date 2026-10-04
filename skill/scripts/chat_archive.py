@@ -529,7 +529,8 @@ def _convert_via_tool(src: Path, tool_cmd: str) -> list[dict]:
     out_dir = src.with_name(src.name + "_out")
     out_dir.mkdir(exist_ok=True)
     cmd = tool_cmd.replace("{input}", _quote_for_shell(str(src))).replace("{dir}", _quote_for_shell(str(out_dir)))
-    proc = subprocess.run(_split_cmd(cmd), capture_output=True, text=True, timeout=600, check=False)
+    proc = subprocess.run(_split_cmd(cmd), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=600, check=False)
     if proc.returncode != 0:
         raise RuntimeError(f"转换工具失败(exit={proc.returncode}): {proc.stderr[:300]}")
     merged = []
@@ -3171,6 +3172,13 @@ def ai_build_knowledge(entries: list[dict]) -> dict[str, str]:
 
 
 def main():
+    if sys.platform == "win32":
+        # Windows 控制台默认 GBK：微信消息含 emoji/生僻字时 print 会崩，统一 UTF-8
+        for _stream in (sys.stdout, sys.stderr):
+            try:
+                _stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
     ap = argparse.ArgumentParser(description="Chat Archive CLI：群消息统计/日报/跟进/知识库/考核")
     ap.add_argument("task", nargs="?", default="all",
                     choices=["all", "stats", "daily", "summary", "kb", "assess", "convert", "kb-sync", "kb-draft", "verify", "monthly", "mcp", "pair", "watch"],
