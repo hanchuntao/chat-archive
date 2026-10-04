@@ -73,6 +73,14 @@ def handle(req: dict, db: Database) -> dict:
                     "properties": {"words": {"type": "array", "items": {"type": "string"}}},
                 },
             },
+            {
+                "name": "hot_keywords",
+                "description": "群消息高频词 Top N（自动切词 + 停用词过滤）",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"top": {"type": "integer", "description": "返回热词数，默认 30"}},
+                },
+            },
         ]
         return {"jsonrpc": "2.0", "result": {"tools": tools}, "id": mid}
 
@@ -98,6 +106,9 @@ def handle(req: dict, db: Database) -> dict:
             elif name == "keyword_frequency":
                 words = args.get("words") or []
                 rows = stats.keyword_frequency(db, words)
+                text = json.dumps(rows, ensure_ascii=False)
+            elif name == "hot_keywords":
+                rows = stats.hot_keywords(db, top=int(args.get("top", 30)))
                 text = json.dumps(rows, ensure_ascii=False)
             else:
                 return _json_rpc_error(-32601, f"unknown tool: {name}", mid)
@@ -142,7 +153,7 @@ class _Handler(BaseHTTPRequestHandler):
                            "limit": int((qs.get("limit") or ["20"])[0])}}, "id": 1}
             else:
                 req = {"jsonrpc": "2.0", "method": "tools/call",
-                       "params": {"name": "keyword_frequency", "arguments": {
+                       "params": {"name": "hot_keywords", "arguments": {
                            "top": int((qs.get("top") or ["30"])[0])}}, "id": 1}
             resp = handle(req, self.db)
             inner = (resp.get("result") or {}).get("content") or []

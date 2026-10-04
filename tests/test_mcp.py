@@ -68,3 +68,22 @@ def test_unknown_tool_errors(mcp_server):
 def test_handle_unknown_method():
     r = handle({"jsonrpc": "2.0", "method": "bogus", "id": 7}, None)
     assert r["error"]["code"] == -32601
+
+
+def test_hot_keywords(mcp_server):
+    """T45: hot_keywords 工具 + REST /api/keywords 返回热词而非空列表。"""
+    r = _rpc(mcp_server, "tools/call", {"name": "hot_keywords", "arguments": {"top": 5}})
+    rows = json.loads(r["result"]["content"][0]["text"])
+    assert rows, "热词不应为空"
+    assert all({"key", "count"} <= set(x) for x in rows)
+    # REST 端点同一数据源
+    with urllib.request.urlopen(mcp_server + "api/keywords?top=5", timeout=5) as resp:
+        rest = json.loads(resp.read())
+    assert rest == rows
+
+
+def test_keywords_rest_no_longer_empty(mcp_server):
+    """T45: /api/keywords 修复前传参语义不符返回 []，现在应返回 Top 热词。"""
+    with urllib.request.urlopen(mcp_server + "api/keywords", timeout=5) as resp:
+        rows = json.loads(resp.read())
+    assert rows, "/api/keywords 不得为空"
