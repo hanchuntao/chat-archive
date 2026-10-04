@@ -13,3 +13,7 @@ venv/
 # 工具
 .idea/
 .DS_Store
+
+# 覆盖率缓存
+.coverage
+htmlcov/
