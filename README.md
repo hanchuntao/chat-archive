@@ -208,6 +208,44 @@ chat-archive
 - 可选依赖：LLM 提炼 `pip install requests`；本地向量检索 `pip install chromadb`。
 - 加密备份转换（`--tool-cmd`）在 Windows 上需指向 `wechat-cli.exe` 类工具，命令用双引号包裹参数。
 
+## Linux / CentOS 使用
+
+CentOS 7/8 默认 Python 版本过低（3.6/3.8），**本项目要求 Python ≥ 3.10**（用了 `dict[str,...]`、`X | None` 等新语法）：
+
+```bash
+# 1) 安装 Python 3.11（EPEL 或源码，二选一）
+# 方式 A：yum -y install python311 python311-pip && ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+# 方式 B：编译安装（CentOS 7 需先装开发包：yum -y groupinstall "Development Tools" openssl-devel bzip2-devel libffi-devel）
+# 2) 验证
+python3 --version   # 必须 >= 3.10
+# 3) 安装依赖并运行
+pip3 install -e /opt/chat-archive
+chat-archive info
+```
+
+CentOS 注意事项：
+- 与 macOS/Linux 同为 POSIX，`bin/chat-archive` 直接可用（`chmod +x`）。
+- SQLite 版本：CentOS 7 自带 SQLite 3.7 无 FTS5 → 需 `yum -y install sqlite-devel` 或用 Python 3.11 自带 SQLite（>=3.35）。
+- 中文字体缺失时 HTML 报告图表中文显示为方块：`yum -y install fontconfig wqy-zenhei`。
+- `--tool-cmd` 转换命令在 POSIX 用单引号包裹参数（`_quote_for_shell` 自动处理，无需手改）。
+
+## 结构化日志（生产/审计）
+
+可选 JSONL 日志通道，供监控/CI/审计消费（不影响终端输出）：
+
+```bash
+chat-archive all --input 群记录.json --staff all --log-file /var/log/chat-archive/run.jsonl --log-level INFO
+```
+
+每条日志是一行 JSON：`{"ts": "...", "level": "INFO", "event": "run.start", "task": "all", ...}`。
+事件含 `log.init / run.start / stage.done（8 个阶段）/ stage.error / run.done`，`--log-level ERROR` 只记失败。
+
+## 大文件流式读取
+
+- TXT/MD：**逐行流式解析**（不再整文件读入内存）；`.jsonl` 逐行解析；`.json` 数组**流式逐元素解析**（raw_decode，不整读）。
+- 实测：41.9MB TXT（61 万条消息）解析峰值内存 ~286MB（纯消息对象开销）；31.5MB JSON（15.5 万条）~491MB。
+- 对象形式 JSON（`{"msgList": [...]}`）仍整读（该结构无法流式，单群导出通常 <50MB）。
+
 ## 从 wechat-cli 导出的记录 → 标准 JSON
 
 `wechat-cli history --format json` 导出的 `messages` 是格式化文本行（`[时间] 发送者: 内容`），

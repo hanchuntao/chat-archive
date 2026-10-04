@@ -36,6 +36,35 @@ from collections import OrderedDict
 from datetime import datetime, timedelta
 
 __version__ = "2.0.0"  # 生产就绪：业务 CLI 版本号（与 version.json 输出格式适配表一致）
+
+# ---- 结构化日志（零依赖 JSONL，--log-file 启用；不影响终端 print） ----
+_LOG_FILE: str = ""
+_LOG_LEVEL: int = 10  # logging.DEBUG=10 / INFO=20 / ERROR=40 语义简化
+
+def _json_log(level: str, event: str, **fields) -> None:
+    """写一行 JSON 日志到 --log-file（审计/监控/CI 用）。失败只警告，不影响主流程。"""
+    if not _LOG_FILE:
+        return
+    rank = {"DEBUG": 10, "INFO": 20, "ERROR": 40}.get(level, 20)
+    if rank < _LOG_LEVEL:
+        return
+    rec = {"ts": datetime.now().isoformat(timespec="seconds"),
+           "level": level, "event": event,
+           "version": __version__, **fields}
+    try:
+        with open(_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[警告] 日志写入失败：{e}", file=sys.stderr)
+
+
+def init_log(log_file: str = "", log_level: str = "INFO") -> None:
+    """main 入口调用：启用结构化日志通道。"""
+    global _LOG_FILE, _LOG_LEVEL
+    _LOG_FILE = log_file
+    _LOG_LEVEL = {"DEBUG": 10, "INFO": 20, "ERROR": 40}.get(log_level.upper(), 20)
+    if log_file:
+        _json_log("INFO", "log.init", file=log_file, log_level=log_level.upper())
 from pathlib import Path
 
 # ---- 复用 chat-archive CLI 数据管道（脱敏规则引擎），保证 PII 规则全局唯一 ----
@@ -56,14 +85,28 @@ ZERO_WIDTH = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060]")
 ORDER_RE = re.compile(r"(?<![A-Za-z0-9])([A-Za-z])(\d{4,10})([A-Za-z])(?![A-Za-z0-9])")
 
 
-def _read_text_any(path: Path) -> str:
-    """读取文本文件：优先 utf-8，失败回退 GB18030/GBK（Windows 微信导出常见编码）。"""
+def _detect_encoding(path: Path) -> str:
+    """探测文本编码：读前 64KB 判定 utf-8/gb18030/gbk（Windows 微信导出常见编码）。"""
+    with open(path, "rb") as f:
+        head = f.read(65536)
     for enc in ("utf-8", "gb18030", "gbk"):
         try:
-            return path.read_text(encoding=enc)
+            head.decode(enc)
+            return enc
         except UnicodeDecodeError:
             continue
-    return path.read_text(encoding="utf-8", errors="ignore")
+    return "utf-8"
+
+
+def _open_text_any(path: Path):
+    """按探测编码打开文本文件（返回文件对象，逐行迭代，流式不整读）。"""
+    return open(path, "r", encoding=_detect_encoding(path), errors="ignore")
+
+
+def _read_text_any(path: Path) -> str:
+    """读取文本文件（小文件整读；大文件请用 _open_text_any 流式）。"""
+    with _open_text_any(path) as f:
+        return f.read()
 
 
 def clean_text(s: str) -> str:
@@ -206,73 +249,120 @@ def _norm_time(v) -> str:
 
 
 def _parse_txt_md(path: Path) -> list[dict] | None:
-    raw = _read_text_any(path)
+    """逐行流式解析 TXT/MD（不整读文件，大文件内存友好）。"""
     out, cur_gid, cur_gname, matched = [], "", "", False
     pending = None  # QQ 两行式：上一行(时间+发送人)，下一行是内容
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        m = RE_GROUP_HEAD.match(line)
-        if m:
-            cur_gname, cur_gid = m.group(2).strip(), m.group(2).strip()
-            matched, pending = True, None
-            continue
-        if is_system_line(line):
-            pending = None
-            continue
-        # QQ 两行式：时间 发送人(QQ号) / 下一行内容
-        m = RE_TIME_HEAD.match(line)
-        if m:
-            pending = (cur_gid, cur_gname, _norm_time(m.group(1)), m.group(2).strip())
-            matched = True
-            continue
-        if pending:
-            t, g, name = pending[0], pending[1], pending[2]
-            if not is_noise(line) and not line.startswith("=="):
-                out.append({"msg_id": "", "group_id": t, "group_name": g,
-                            "sender_userid": name, "sender_name": name,
-                            "msg_type": "text", "content": line, "sent_at": pending[3]})
+    with _open_text_any(path) as _f:
+        for _raw_line in _f:
+            line = _raw_line
+            line = line.strip()
+            if not line:
+                continue
+            m = RE_GROUP_HEAD.match(line)
+            if m:
+                cur_gname, cur_gid = m.group(2).strip(), m.group(2).strip()
+                matched, pending = True, None
+                continue
+            if is_system_line(line):
+                pending = None
+                continue
+            # QQ 两行式：时间 发送人(QQ号) / 下一行内容
+            m = RE_TIME_HEAD.match(line)
+            if m:
+                pending = (cur_gid, cur_gname, _norm_time(m.group(1)), m.group(2).strip())
                 matched = True
-            pending = None
-            continue
-        m = RE_LINE_A.match(line)
-        if not m:
-            m = RE_LINE_B.match(line)
-        if not m:
-            m = RE_LINE_C.match(line)
-        if not m:
-            continue
-        time_s, sender, content = m.group(1), m.group(2).strip(), m.group(3).strip()
-        if not sender or not content or is_noise(content):
-            continue
-        out.append({"msg_id": "", "group_id": cur_gid, "group_name": cur_gname,
-                    "sender_userid": sender, "sender_name": sender,
-                    "msg_type": "text", "content": content, "sent_at": _norm_time(time_s)})
-        matched = True
-    return out if matched else None
+                continue
+            if pending:
+                t, g, name = pending[0], pending[1], pending[2]
+                if not is_noise(line) and not line.startswith("=="):
+                    out.append({"msg_id": "", "group_id": t, "group_name": g,
+                                "sender_userid": name, "sender_name": name,
+                                "msg_type": "text", "content": line, "sent_at": pending[3]})
+                    matched = True
+                pending = None
+                continue
+            m = RE_LINE_A.match(line)
+            if not m:
+                m = RE_LINE_B.match(line)
+            if not m:
+                m = RE_LINE_C.match(line)
+            if not m:
+                continue
+            time_s, sender, content = m.group(1), m.group(2).strip(), m.group(3).strip()
+            if not sender or not content or is_noise(content):
+                continue
+            out.append({"msg_id": "", "group_id": cur_gid, "group_name": cur_gname,
+                        "sender_userid": sender, "sender_name": sender,
+                        "msg_type": "text", "content": content, "sent_at": _norm_time(time_s)})
+            matched = True
+        return out if matched else None
 
 
-def _parse_json(path: Path) -> list[dict] | None:
-    try:
-        data = json.loads(_read_text_any(path))
-    except Exception:
-        raise ValueError(f"JSON 解析失败: {path.name}")
-    if isinstance(data, dict):
-        for k in ("msgList", "data", "messages", "rows", "msgs"):
-            if isinstance(data.get(k), list):
-                data = data[k]
-                break
-        else:
-            data = [data]
-    if not isinstance(data, list):
-        return None
-    msgs = [m for m in data if isinstance(m, dict)]
-    # 企微存档：ToUserName/FromUserName；WeChatMsg：StrContent/Sender
+
+def _iter_json_array(path: Path, chunk: int = 65536):
+    """流式解析 JSON 数组（文件首字符 '['）：raw_decode 逐元素 yield，不整读文件。
+    大文件（50MB+ 微信导出）内存友好：只保留解析出的对象，不保留整文件字符串。"""
+    dec = json.JSONDecoder()
+    with _open_text_any(path) as f:
+        head = f.read(1)
+        if head != "[":
+            return
+        buf = head
+        idx = 1  # 已消费开头的 '['，从首个元素起解析
+        while True:
+            # 跳过空白
+            while idx < len(buf) and buf[idx] in " \t\r\n":
+                idx += 1
+            if idx >= len(buf):
+                more = f.read(chunk)
+                if not more:
+                    raise ValueError("JSON 数组未闭合（缺 ']'）")
+                buf += more
+                continue
+            if buf[idx] in ("]", ","):
+                if buf[idx] == "]":
+                    return
+                idx += 1  # 元素间逗号，继续下一个
+                continue
+            try:
+                obj, end = dec.raw_decode(buf, idx)
+            except json.JSONDecodeError:
+                more = f.read(chunk)
+                if not more:
+                    raise ValueError(f"JSON 数组元素截断（偏移 {idx}）")
+                buf += more
+                continue
+            yield obj
+            idx = end
+            if idx > 1_000_000:  # 防缓冲区无限膨胀：消费过的前缀丢弃
+                buf = buf[idx:]
+                idx = 0
+
+
+def _parse_jsonl(path: Path) -> list[dict] | None:
+    """JSONL 逐行流式解析（每行一个对象，微信/企微导出常见）。"""
+    out = []
+    with _open_text_any(path) as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                out.append(obj)
+    return out or None
+
+
+def _normalize_json_msgs(msgs: list[dict]) -> list[dict] | None:
+    """JSON 消息归一化：格式判别（企微存档/WeChatMsg/wechat-cli）+ 字段转换 + 噪声过滤。"""
     wecom = any(m.get("ToUserName") and m.get("FromUserName") for m in msgs)
     wmsg = any(m.get("StrContent") or (m.get("msg_id") and m.get("content")) for m in msgs)
     wc = any(m.get("senderDisplayName") and m.get("formattedTime") for m in msgs)
-    if not (wecom or wmsg or wc):
+    chatlab = any(m.get("content") is not None and (m.get("sender") or m.get("sender_name")) for m in msgs)
+    if not (wecom or wmsg or wc or chatlab):
         return None
     out = []
     for m in msgs:
@@ -286,7 +376,7 @@ def _parse_json(path: Path) -> list[dict] | None:
             mtype = str(m.get("MsgType") or "text")
         elif m.get("StrContent") is not None or m.get("content") is not None:
             content = str(m.get("StrContent") or m.get("content") or m.get("Content") or m.get("text") or "")
-            sender = str(m.get("Sender") or m.get("sender_userid") or m.get("userid")
+            sender = str(m.get("Sender") or m.get("sender") or m.get("sender_userid") or m.get("userid")
                         or m.get("senderDisplayName") or m.get("senderName") or "")
             name = str(m.get("sender_name") or m.get("NickName") or m.get("senderDisplayName")
                       or m.get("senderName") or sender)
@@ -306,6 +396,32 @@ def _parse_json(path: Path) -> list[dict] | None:
                     "msg_type": mtype, "content": content.strip(), "sent_at": sent})
     return out
 
+def _parse_json(path: Path) -> list[dict] | None:
+    # 数组形式（微信/企微导出）→ 流式逐元素解析，不整读文件
+    with _open_text_any(path) as _probe:
+        _head = _probe.read(1)
+    if _head == "[":
+        try:
+            msgs = [m for m in _iter_json_array(path) if isinstance(m, dict)]
+        except (ValueError, json.JSONDecodeError) as e:
+            raise ValueError(f"JSON 解析失败: {path.name}") from e
+        return _normalize_json_msgs(msgs)
+    # 对象形式（{...} 包裹数组）→ 整读（该结构无法流式）
+    try:
+        data = json.loads(_read_text_any(path))
+    except Exception:
+        raise ValueError(f"JSON 解析失败: {path.name}")
+    if isinstance(data, dict):
+        for k in ("msgList", "data", "messages", "rows", "msgs"):
+            if isinstance(data.get(k), list):
+                data = data[k]
+                break
+        else:
+            data = [data]
+    if not isinstance(data, list):
+        return None
+    msgs = [m for m in data if isinstance(m, dict)]
+    return _normalize_json_msgs(msgs)
 
 def _parse_csv(path: Path) -> list[dict] | None:
     raw = _read_text_any(path)
@@ -347,7 +463,9 @@ def _parse_csv(path: Path) -> list[dict] | None:
 def parse_file(path: Path) -> tuple[list[dict], str]:
     suffix = path.suffix.lower()
     cands = []
-    if suffix in (".json", ".jsonl"):
+    if suffix == ".jsonl":
+        cands = [_parse_jsonl]
+    elif suffix == ".json":
         cands = [_parse_json]
     elif suffix in (".txt", ".md"):
         cands = [_parse_txt_md]
@@ -385,11 +503,33 @@ def load_input(input_path: str, tool_cmd: str = "") -> tuple[list[dict], list[st
     return items, fmts
 
 
+def _split_cmd(cmd: str, windows: bool | None = None) -> list[str]:
+    """平台感知命令切分：POSIX 用 shlex；Windows 用 posix=False（保留反斜杠路径）。"""
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        import shlex as _sh
+        parts = _sh.split(cmd, posix=False)
+        # posix=False 保留外层引号；subprocess 传 list 时会按 Windows 规则自动引号，
+        # 这里剥掉引号避免双重引号（list2cmdline 会为含空格路径补回引号）
+        return [p[1:-1] if len(p) > 1 and p[0] == p[-1] == '"' else p for p in parts]
+    return shlex.split(cmd)
+
+
+def _quote_for_shell(s: str, windows: bool | None = None) -> str:
+    """平台感知路径引号：POSIX 用单引号；Windows 用双引号（cmd 不认单引号）。"""
+    if windows is None:
+        windows = os.name == "nt"
+    if windows:
+        return '"' + str(s).replace('"', '""') + '"'
+    return shlex.quote(str(s))
+
+
 def _convert_via_tool(src: Path, tool_cmd: str) -> list[dict]:
     out_dir = src.with_name(src.name + "_out")
     out_dir.mkdir(exist_ok=True)
-    cmd = tool_cmd.replace("{input}", shlex.quote(str(src))).replace("{dir}", shlex.quote(str(out_dir)))
-    proc = subprocess.run(shlex.split(cmd), capture_output=True, text=True, timeout=600)
+    cmd = tool_cmd.replace("{input}", _quote_for_shell(str(src))).replace("{dir}", _quote_for_shell(str(out_dir)))
+    proc = subprocess.run(_split_cmd(cmd), capture_output=True, text=True, timeout=600)
     if proc.returncode != 0:
         raise RuntimeError(f"转换工具失败(exit={proc.returncode}): {proc.stderr[:300]}")
     merged = []
@@ -3058,6 +3198,8 @@ def main():
     ap.add_argument("--active-days", type=int, default=0, help="活跃窗口：仅处理最近 N 天消息（0=全部，P2-3）")
     ap.add_argument("--interval", type=int, default=60, help="watch：轮询间隔秒数（默认 60，P2-7）")
     ap.add_argument("--version", action="version", version=f"chat-archive {__version__}")
+    ap.add_argument("--log-file", default="", help="结构化日志 JSONL 路径（缺省不写；审计/监控/CI 用）")
+    ap.add_argument("--log-level", default="INFO", choices=["DEBUG", "INFO", "ERROR"], help="日志级别（默认 INFO）")
     ap.add_argument("--kb-config", default="", help="kb-sync 时指定 config.json 路径（默认仓库根 config.json）")
     ap.add_argument("--incremental", action="store_true",
                     help="增量模式：以记忆层 history.json 各群锚点为界，只处理锚点之后的新消息（需先跑过一次非增量）")
@@ -3068,6 +3210,7 @@ def main():
     ap.add_argument("--search-bm25", action="store_true",
                     help="检索排序用 bigram-BM25 + 时间衰减（P2-21 混合检索），默认正则命中即出")
     args = ap.parse_args()
+    init_log(args.log_file, args.log_level)
 
     _cfg = load_config()
     _def = _cfg.get("defaults", {}) if isinstance(_cfg, dict) else {}
@@ -3083,6 +3226,9 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     # 每次运行一个独立结果目录（out/<日期_时间>/），运行一次只有一份结果，重跑不覆盖
     run_dir = out / datetime.now().strftime("%Y-%m-%d_%H%M%S_%f")
+    _json_log("INFO", "run.start",
+              task=args.task, input=args.input or "(config)", staff=args.staff or "(unset)",
+              out=str(out), log_level=args.log_level)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if args.task == "convert":
@@ -3254,6 +3400,7 @@ def main():
         st_md.append(f"| {r['userid']} | {r['sent']} | {r['effective']} | {r['filler']} | {r['filler_rate']}% |")
     (run_dir / "effective_stats.md").write_text("\n".join(st_md) + "\n", encoding="utf-8")
     print(f"[1/1] 有效回复统计 → {run_dir / 'effective_stats.csv'}")
+    _json_log("INFO", "stage.done", stage="1/1", artifact="effective_stats.csv")
 
     # 2. 工作日报
     day_dir = run_dir / "daily_reports"
@@ -3280,6 +3427,7 @@ def main():
                 continue
         (day_dir / f"{u}_{target}.md").write_text(build_daily_report(msgs, u, target), encoding="utf-8")
     print(f"[2/2] 员工日报 → {day_dir}/（{'AI 提炼' if use_llm else '规则版'}）")
+    _json_log("INFO", "stage.done", stage="2/2", artifact=str(day_dir))
 
     # 3. 讨论要点 + 跟进（漏回复的客户问题自动列入待跟进，红标防丢单）+ 丢单/商机信号（P0-6）
     scheme = load_scheme(args.scheme, args.duty)
@@ -3348,6 +3496,7 @@ def main():
     (run_dir / "followups.md").write_text("\n".join(fu_md) + "\n", encoding="utf-8")
     n_risk = sum(1 for f in fups if f.get("type") in ("漏回复", "询价未回复", "承诺待兑现") or f.get("unanswered"))
     print(f"[3/3] 讨论要点+跟进事项 → followups.csv（{len(fups)} 条待跟进，其中丢单风险 {n_risk} 条）")
+    _json_log("INFO", "stage.done", stage="3/3", artifact="followups.csv", followups=len(fups), risk=n_risk)
 
     # P0-4 主动触达：丢单/商机/待跟进事件推送（config.webhook）
     try:
@@ -3363,7 +3512,9 @@ def main():
         faq_min = int(_cfg4.get("faq", {}).get("min_freq", 2) if isinstance(_cfg4, dict) else 2)
         n_entries, ai_n, n_train = _build_kb_section(run_dir, msgs, rules, use_llm, args.no_mask, faq_min, errors)
         print(f"[5/5] FAQ 草稿 → {run_dir / 'knowledge' / 'faq_drafts.md'}")
+        _json_log("INFO", "stage.done", stage="5/5", artifact="knowledge/faq_drafts.md")
         print(f"[6/6] 知识库（清洗+脱敏）→ {run_dir / 'knowledge'}/（{n_entries} 条话题，训练集 {n_train} 条，AI 提炼 {ai_n} 个条目）")
+        _json_log("INFO", "stage.done", stage="6/6", artifact="knowledge/", entries=n_entries, train=n_train, ai=ai_n)
     except Exception as e:
         errors.append(f"知识库构建失败: {e}")
         print(f"[错误] 知识库构建失败：{e}")
@@ -3388,6 +3539,7 @@ def main():
         notes = build_assessment_notes(msgs, results, unanswered, [])
     (run_dir / "assessment_notes.md").write_text(notes, encoding="utf-8")
     print(f"[7/7] 绩效考核 → {run_dir / 'assessment.csv'}（+ assessment_notes.md 证据化评语）")
+    _json_log("INFO", "stage.done", stage="7/7", artifact="assessment.csv")
 
     # 6. 群活跃度统计（P0-5：话唠榜/活跃时段/熬夜冠军，纯标准库）
     try:
@@ -3404,6 +3556,7 @@ def main():
                           f"{r['active_days']} | {r['peak_hour']} | {r['night']} |")
         (run_dir / "activity.md").write_text("\n".join(act_md) + "\n", encoding="utf-8")
         print(f"[8/8] 群活跃度统计 → {run_dir / 'activity.csv'}")
+        _json_log("INFO", "stage.done", stage="8/8", artifact="activity.csv")
     except Exception as e:
         errors.append(f"活跃度统计失败: {e}")
         print(f"[错误] 活跃度统计失败：{e}")
@@ -3437,6 +3590,7 @@ def main():
         if compact:
             (run_dir / "chat_compact.txt").write_text(compact + "\n", encoding="utf-8")
         print(f"[9/9] 按时段压缩文本 → {run_dir / 'chat_compact.txt'}")
+        _json_log("INFO", "stage.done", stage="9/9", artifact="chat_compact.txt")
     except Exception as e:
         errors.append(f"压缩文本生成失败: {e}")
         print(f"[错误] 压缩文本生成失败：{e}")
@@ -3739,8 +3893,12 @@ def main():
         print(f"[错误] 完整性清单生成失败：{e}")
 
     if errors:
+        for e in errors:
+            _json_log("ERROR", "stage.error", detail=e)
         print("\n[错误] 本次运行存在失败项（见上），退出码 1：", *errors, sep="\n  - ")
         sys.exit(1)
+    _json_log("INFO", "run.done", out_dir=str(run_dir.resolve()), errors=len(errors),
+              stage_count="9 阶段")
     print(f"\n全部完成。本次结果：{run_dir.resolve()}")
 
 
