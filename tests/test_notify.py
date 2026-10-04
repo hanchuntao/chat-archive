@@ -1,13 +1,11 @@
 # P0-4 主动触达（Webhook/邮件）测试
+import importlib.util
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 import pytest
-
-import importlib.util
-import sys
-from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "skill" / "scripts" / "chat_archive.py"

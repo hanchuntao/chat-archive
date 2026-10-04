@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Render chat-archive 业务产物为单文件 HTML 报告（report.html）。
 
 读取 `--out` 目录下已生成的 6 类产物（effective_stats.csv、daily_reports/、
@@ -15,8 +14,8 @@ import argparse
 import csv
 import io
 import json
-import shutil
 import re
+import shutil
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -26,7 +25,7 @@ from pathlib import Path
 def _read_csv(path: Path) -> list[dict]:
     if not path.exists():
         return []
-    with open(path, "r", encoding="utf-8", newline="") as f:
+    with open(path, encoding="utf-8", newline="") as f:
         text = f.read()
     if not text.strip() or text.strip() == "(无数据)":
         return []
@@ -542,8 +541,8 @@ def _render_dialogues(pairs: list[dict]) -> str:
         c, s = p.get("customer", {}), p.get("staff", {})
         q = escape((c.get("content") or "")[:160])
         a = escape((s.get("content") or "")[:160])
-        qn = escape((c.get("sender") or "?"))
-        an = escape((s.get("sender") or "?"))
+        qn = escape(c.get("sender") or "?")
+        an = escape(s.get("sender") or "?")
         qt = (c.get("sent_at") or "")[:16].replace("T", " ")
         at = (s.get("sent_at") or "")[:16].replace("T", " ")
         html.append(
@@ -740,7 +739,7 @@ def _render_funnel_level(fun_rows: list[dict], lv_rows: list[dict]) -> str:
     html.append('<div class="sub-block"><h4>销售漏斗与卡点（咨询→成交）</h4>')
     if fun_rows:
         stages = ["咨询", "询价", "催拍/付款咨询", "下单未付款", "成交"]
-        cnt = {s: 0 for s in stages}
+        cnt = dict.fromkeys(stages, 0)
         for r in fun_rows:
             s = r.get("stage", "咨询")
             cnt[s] = cnt.get(s, 0) + 1

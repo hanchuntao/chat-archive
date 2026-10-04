@@ -426,8 +426,8 @@ def test_main_llm_ok_with_toolcmd_hint(tmp_path, monkeypatch):
 
 def test_sync_kb_internal_api(monkeypatch, tmp_path):
     sk = _load_script("sync_kb.py", "ca_sync_kb2")
-    import urllib.request as ur
     import urllib.error as ue
+    import urllib.request as ur
 
     # _ima_post 成功
     def _ok(req, timeout=30):
@@ -549,9 +549,8 @@ def test_sync_kb_run_and_main(tmp_path, monkeypatch):
     # run()：ima 已配 Key 但定位失败 → exit 1
     monkeypatch.setattr(sk, "load_config", lambda c: {"knowledge": {"ima": {"client_id": "c", "api_key": "k"}}})
     monkeypatch.setattr(sk, "_find_knowledge_base", lambda c, k, n: (None, "auth err"))
-    with pytest.raises(SystemExit) as e:
-        with contextlib.redirect_stdout(io.StringIO()):
-            sk.run(str(out), "", "ima")
+    with pytest.raises(SystemExit) as e, contextlib.redirect_stdout(io.StringIO()):
+        sk.run(str(out), "", "ima")
     assert e.value.code == 1
     # main()：sys.argv 注入（load_config 仍返回 ima 配置 → run all 会 auth err → exit 1）
     monkeypatch.setattr(sys, "argv", ["sk", "--out", str(out), "--to", "local"])
@@ -575,9 +574,8 @@ def test_convert_wx_main(tmp_path, monkeypatch):
     src2 = tmp_path / "bad.json"
     src2.write_text(json.dumps({"x": 1}), encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["cw", "--input", str(src2), "--output", str(tmp_path / "o2.json")])
-    with pytest.raises(SystemExit):
-        with contextlib.redirect_stdout(io.StringIO()):
-            cw.main()
+    with pytest.raises(SystemExit), contextlib.redirect_stdout(io.StringIO()):
+        cw.main()
 
 
 # ============================================================ render_html 分支

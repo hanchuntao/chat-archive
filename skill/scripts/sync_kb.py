@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """kb-sync — 知识库同步：本地 + 腾讯 ima 双通道（按 config.json 的 knowledge 段）。
 
 用法：
@@ -20,8 +19,8 @@ import json
 import shutil
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 IMA_BASE = "https://ima.qq.com"
@@ -44,6 +43,17 @@ def load_config(cfg_path: str | None) -> dict:
 
 def knowledge_cfg(config: dict) -> dict:
     return config.get("knowledge", {}) if isinstance(config, dict) else {}
+
+
+def resolve_latest(out: Path) -> Path:
+    """定位含 knowledge/ 的产物目录：out 本身即批次目录时原样返回；
+    传结果根时自动选最新的批次目录（按 mtime）。"""
+    if (out / "knowledge").is_dir():
+        return out
+    cands = sorted([p for p in out.glob("*/")
+                    if (p / "knowledge").is_dir()],
+                   key=lambda p: p.stat().st_mtime_ns)
+    return cands[-1] if cands else out
 
 
 # ---------------------------------------------------------------- 本地同步
@@ -231,7 +241,7 @@ def sync_ima(out: Path, cfg: dict) -> str:
 
 def run(out: str, config_path: str = "", to: str = "all") -> None:
     """程序化入口（业务层直接调用，避免 sys.argv hack）。"""
-    out = Path(out)
+    out = resolve_latest(Path(out))
     cfg = knowledge_cfg(load_config(config_path))
     msgs = []
     if to in ("local", "all"):

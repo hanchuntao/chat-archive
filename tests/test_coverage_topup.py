@@ -5,11 +5,8 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
-import json
 import sys
 from pathlib import Path
-
-import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "skill" / "scripts" / "chat_archive.py"

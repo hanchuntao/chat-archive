@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 wechat-cli / 手工文本 → chat-archive 标准 JSON 转换器
 

@@ -1,10 +1,7 @@
 """P2 批：YAML 伴生 / ChatLab 导出 / 活跃窗口 / 行业规则包 / 知识库质量评分 / 词云数据 / 回复延迟。"""
 import importlib.util
 import json
-import tempfile
 from pathlib import Path
-
-import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "skill" / "scripts" / "chat_archive.py"

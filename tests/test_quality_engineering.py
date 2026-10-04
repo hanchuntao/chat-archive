@@ -12,7 +12,7 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))  # 数据层包 chat_archive/（优先）
 
-from chat_archive.db import Database, SCHEMA_VERSION  # noqa: E402
+from chat_archive.db import SCHEMA_VERSION, Database
 
 
 def _import_business():

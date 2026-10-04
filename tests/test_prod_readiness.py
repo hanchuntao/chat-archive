@@ -1,6 +1,5 @@
 """生产就绪审计批次：--version / XSS 转义 / config 损坏降级 / 端口占用。"""
 import importlib.util
-import json
 import socket
 import subprocess
 import sys

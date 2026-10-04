@@ -252,7 +252,6 @@ def test_staff_alias_mapping():
 
 def test_gbk_input_parsing():
     """Windows 微信导出的 GBK 编码文件应能解析（GB18030 回退）。"""
-    import io
     gbk_txt = "2026-09-01 10:00 张三: 今天发货吗\n2026-09-01 10:01 客户A: 多久到？\n".encode("gb18030")
     tmp = Path(__file__).parent / "_gbk_tmp.txt"
     tmp.write_bytes(gbk_txt)

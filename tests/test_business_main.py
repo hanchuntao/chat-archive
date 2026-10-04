@@ -12,11 +12,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
-
-import re
 
 import pytest
 
@@ -598,7 +597,7 @@ def test_write_csv_roundtrip(tmp_path):
 # ============================================================ 辅助脚本
 
 def test_convert_wx_types():
-    from importlib.util import spec_from_file_location, module_from_spec
+    from importlib.util import module_from_spec, spec_from_file_location
     cw_path = REPO / "skill" / "scripts" / "convert_wx.py"
     spec = spec_from_file_location("ca_convert_wx", cw_path)
     cw = module_from_spec(spec)
@@ -624,7 +623,7 @@ def test_convert_wx_types():
 
 
 def test_sync_kb_local_and_ima_export(tmp_path):
-    from importlib.util import spec_from_file_location, module_from_spec
+    from importlib.util import module_from_spec, spec_from_file_location
     sk_path = REPO / "skill" / "scripts" / "sync_kb.py"
     spec = spec_from_file_location("ca_sync_kb", sk_path)
     sk = module_from_spec(spec)
@@ -655,7 +654,7 @@ def test_sync_kb_local_and_ima_export(tmp_path):
 
 
 def test_sync_kb_ima_upload_fail(monkeypatch, tmp_path):
-    from importlib.util import spec_from_file_location, module_from_spec
+    from importlib.util import module_from_spec, spec_from_file_location
     sk_path = REPO / "skill" / "scripts" / "sync_kb.py"
     spec = spec_from_file_location("ca_sync_kb2", sk_path)
     sk = module_from_spec(spec)
@@ -682,7 +681,7 @@ def test_sync_kb_ima_upload_fail(monkeypatch, tmp_path):
 
 def test_render_html_full_and_empty(tmp_path):
     """render(run_dir) 直接调用：完整产物目录渲染 + 空目录渲染（缺产物分支）。"""
-    from importlib.util import spec_from_file_location, module_from_spec
+    from importlib.util import module_from_spec, spec_from_file_location
     rh_path = REPO / "skill" / "scripts" / "render_html.py"
     spec = spec_from_file_location("ca_render_html", rh_path)
     rh = module_from_spec(spec)

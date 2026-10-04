@@ -13,13 +13,13 @@ import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "skill" / "scripts"))
-import convert_wx  # noqa: E402
+import convert_wx
 
 
 # ---------- read_text_any ----------
 def test_read_text_any_utf8(tmp_path):
     p = tmp_path / "u.txt"
-    p.write_bytes("你好".encode("utf-8"))
+    p.write_bytes("你好".encode())
     assert convert_wx.read_text_any(p) == "你好"
 
 

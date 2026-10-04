@@ -1,7 +1,6 @@
 """结构化日志 / 大文件流式解析 / 跨平台命令切分（生产增强批次）。"""
 import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import pytest

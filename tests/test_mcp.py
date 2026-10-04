@@ -9,9 +9,9 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 TXT_SAMPLE = REPO / "sample_data" / "ecom_chat.txt"
 
-from chat_archive.db import Database  # noqa: E402
-from chat_archive.pipeline.ingest import ingest_file  # noqa: E402
-from chat_archive.mcp_server import handle, serve  # noqa: E402
+from chat_archive.db import Database
+from chat_archive.mcp_server import handle, serve
+from chat_archive.pipeline.ingest import ingest_file
 
 
 @pytest.fixture(scope="module")
