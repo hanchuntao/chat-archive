@@ -190,6 +190,17 @@ _CONFIG_CACHE: dict | None = None
 _CONFIG_CACHE_SIG: tuple = (0, 0)
 
 
+def _deep_merge(base: dict, over: dict) -> dict:
+    """递归合并：over 覆盖 base，嵌套 dict 逐层合并（局部配置覆盖默认配置）。"""
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
 def load_config() -> dict:
     """读取项目根 config.json（快照保留策略等）；缺失或损坏时返回默认值。
 
@@ -217,6 +228,15 @@ def load_config() -> dict:
                 print("[警告] config.json 顶层不是对象，已用默认配置", file=sys.stderr)
         except Exception:
             print(f"[警告] config.json 解析失败，已用默认配置（路径：{cfg_path}）", file=sys.stderr)
+    # config.local.json 个人覆盖层（真实密钥/路径放这里，gitignore 不入库）
+    local_path = cfg_path.with_name("config.local.json")
+    if local_path.exists():
+        try:
+            raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+            if isinstance(raw_local, dict):
+                data = _deep_merge(data, raw_local)
+        except Exception:
+            pass
     _CONFIG_CACHE, _CONFIG_CACHE_SIG = data, sig
     return data
 

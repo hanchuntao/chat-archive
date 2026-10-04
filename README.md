@@ -535,3 +535,10 @@ python3 skill/scripts/chat_archive.py kb-sync --out 输出目录 --to local
 # 之后在 Obsidian 打开 vault 即可看到当天沉淀的知识条目
 ```
 
+
+## License
+
+MIT License（见 [LICENSE](LICENSE)）。
+
+> 提示：`config.json` 提交的是默认样例配置（密钥为空）。你的真实 API Key / 输入路径请写入同目录
+> `config.local.json`（已 gitignore），程序自动深合并覆盖 `config.json`，密钥不会入库。

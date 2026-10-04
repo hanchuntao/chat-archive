@@ -74,3 +74,22 @@ def test_cos_sign_independent_check():
     expected = hmac.new(sign_key.encode(), string_to_sign.encode(), hashlib.sha1).hexdigest()
     assert got == expected
     assert len(got) == 40
+
+
+def test_config_local_override(tmp_path, monkeypatch):
+    """config.local.json 深合并覆盖默认配置（真实密钥层）。"""
+    import json as _json
+    cfg = tmp_path / "config.json"
+    cfg.write_text(_json.dumps({"llm": {"model": "a", "api_key": ""},
+                                "defaults": {"input": "x", "staff": "all"}},
+                               ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "config.local.json").write_text(
+        _json.dumps({"llm": {"api_key": "sk-secret", "base_url": "https://x"},
+                     "defaults": {"input": "y"}}, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    merged = sync_kb.load_config(str(cfg))
+    assert merged["llm"]["model"] == "a"          # 默认保留
+    assert merged["llm"]["api_key"] == "sk-secret"  # local 覆盖
+    assert merged["llm"]["base_url"] == "https://x"
+    assert merged["defaults"]["input"] == "y"      # 标量覆盖
+    assert merged["defaults"]["staff"] == "all"    # 未覆盖保留

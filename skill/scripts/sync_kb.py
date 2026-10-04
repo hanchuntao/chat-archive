@@ -31,14 +31,28 @@ IMA_WIKI = IMA_BASE + "/openapi/wiki/v1"
 
 def load_config(cfg_path: str | None) -> dict:
     path = Path(cfg_path) if cfg_path else Path(__file__).resolve().parents[2] / "config.json"
+    data: dict = {}
     if path.exists():
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return data
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                data = raw
         except Exception:
             pass
-    return {}
+    # config.local.json 个人覆盖层（真实 API Key 等不入库）：任何 config.json 均读其伴生 local
+    local_path = path.with_name("config.local.json")
+    if local_path.exists():
+        try:
+            raw_local = json.loads(local_path.read_text(encoding="utf-8"))
+            if isinstance(raw_local, dict):
+                for k, v in raw_local.items():
+                    if isinstance(v, dict) and isinstance(data.get(k), dict):
+                        data[k] = {**data[k], **v}
+                    else:
+                        data[k] = v
+        except Exception:
+            pass
+    return data
 
 
 def knowledge_cfg(config: dict) -> dict:
