@@ -1147,6 +1147,65 @@ def reply_pairs(msgs: list[dict], window_min: int = 10) -> list[dict]:
     return sorted(rows, key=lambda x: -x["count"])[:50]
 
 
+# ---------------------------------------------------------------- 关键词趋势 / 语音转写占位 / 媒体归档增强（第7轮吸收）
+def keywords_trend(msgs: list[dict], top_n: int = 15) -> list[dict]:
+    """关键词趋势（年度报告「关键词随时间变化」）：全局 Top 词按周计数，长表输出。"""
+    from collections import Counter, OrderedDict
+    glob: Counter = Counter()
+    for m in msgs:
+        for seg in re.findall(r'[\u4e00-\u9fff]{2,6}', _text_plain(m["content"])):
+            if seg not in STOP_WORDS:
+                glob[seg] += 1
+    top = set(w for w, _ in glob.most_common(top_n))
+    by_week: "OrderedDict[str, Counter]" = OrderedDict()
+    for m in msgs:
+        wk = m["sent_at"].strftime("%Y-W%W")
+        c2 = _text_plain(m["content"])
+        for seg in re.findall(r'[\u4e00-\u9fff]{2,6}', c2):
+            if seg in top:
+                by_week.setdefault(wk, Counter())[seg] += 1
+    rows = []
+    for wk, cnt in by_week.items():
+        for w, n in sorted(cnt.items(), key=lambda kv: -kv[1]):
+            rows.append({"week": wk, "word": w, "count": n})
+    return rows
+
+
+def voice_pending(msgs: list[dict]) -> list[dict]:
+    """语音转写占位清单（对齐 MemoTrace 语音转写能力，占位版）：
+    列出所有 voice 消息，transcript 留空、status=pending，待上游语音文件 + ASR 后回填。"""
+    rows = []
+    for m in msgs:
+        if (m.get("msg_type") or "").lower() == "voice" or "[语音]" in (m.get("content") or ""):
+            rows.append({
+                "msg_id": m.get("msg_id", ""), "sender": m.get("sender", ""),
+                "sent_at": m["sent_at"].strftime("%Y-%m-%d %H:%M"),
+                "content": (m.get("content") or "")[:80], "transcript": "", "status": "pending",
+            })
+    return rows
+
+
+MEDIA_MARK = (("[图片]", "image"), ("[语音]", "voice"), ("[视频]", "video"), ("[文件]", "file"),
+              ("[链接]", "link"), ("[表情]", "emoji"), ("[红包]", "redpack"))
+
+
+def media_archive(msgs: list[dict]) -> list[dict]:
+    """媒体归档增强：从业务消息生成结构化媒体清单（含发送者/时间/归档路径提示），
+    与行级 media_manifest 互补（本清单按业务语义组织，可据此把上游导出的媒体拷入对应目录）。"""
+    rows = []
+    for m in msgs:
+        c = m.get("content") or ""
+        kind = next((k for marker, k in MEDIA_MARK if marker in c), None)
+        if kind:
+            rows.append({
+                "msg_id": m.get("msg_id", ""), "sender": m.get("sender", ""),
+                "sent_at": m["sent_at"].strftime("%Y-%m-%d %H:%M"), "kind": kind,
+                "content": c[:80],
+                "path": f"media/{m['sent_at'].strftime('%Y-%m-%d')}/{kind}/{m.get('msg_id','')}.txt",
+            })
+    return rows
+
+
 # ---------------------------------------------------------------- 丢单/商机信号（P0-6）
 INQUIRY_HINTS = ["多少钱", "报价", "怎么卖", "有货", "价格", "批", "采购", "要多少",
                  "拿货", "下单", "买", "怎么买", "链接", "哪里买", "多少钱一"]
@@ -2751,7 +2810,11 @@ def main():
         write_csv(run_dir / "activity_daily.csv", daily_activity(msgs))
         write_csv(run_dir / "message_types.csv", message_type_dist(msgs))
         write_csv(run_dir / "interactions.csv", reply_pairs(msgs))
-        print(f"[9/9] 年度与消息分析（高频词/情感/成员档案/每日量/类型/互动）→ keywords.csv / sentiment.json / members.csv / activity_daily.csv / message_types.csv / interactions.csv")
+        # 第7轮吸收：关键词趋势 / 语音转写占位 / 媒体归档增强
+        write_csv(run_dir / "keywords_trend.csv", keywords_trend(msgs))
+        write_csv(run_dir / "voice_pending.csv", voice_pending(msgs))
+        write_csv(run_dir / "media_archive.csv", media_archive(msgs))
+        print(f"[9/9] 年度与消息分析（高频词/情感/成员/每日量/类型/互动/趋势/语音/媒体）→ keywords.csv / sentiment.json / members.csv / activity_daily.csv / message_types.csv / interactions.csv / keywords_trend.csv / voice_pending.csv / media_archive.csv")
     except Exception as e:
         errors.append(f"年度分析失败: {e}")
         print(f"[错误] 年度分析失败：{e}")

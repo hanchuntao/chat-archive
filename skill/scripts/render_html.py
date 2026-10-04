@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import re
 from datetime import datetime
@@ -25,7 +26,10 @@ def _read_csv(path: Path) -> list[dict]:
     if not path.exists():
         return []
     with open(path, "r", encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
+        text = f.read()
+    if not text.strip() or text.strip() == "(无数据)":
+        return []
+    return list(csv.DictReader(io.StringIO(text)))
 
 
 def _parse_daily(path: Path) -> dict:
@@ -872,6 +876,57 @@ def _render_message_insight(daily: list[dict], types: list[dict], inter: list[di
     return "<br>".join(out) if out else '<p class="tag">（无消息洞察数据）</p>'
 
 
+def _render_keywords_trend(rows: list[dict]) -> str:
+    """关键词趋势（第7轮吸收）：周 × Top 词计数表。"""
+    if not rows:
+        return ""
+    weeks = []
+    seen = set()
+    for r in rows:
+        w = r.get("week", "")
+        if w not in seen:
+            seen.add(w)
+            weeks.append(w)
+    trs = ""
+    for r in rows[:40]:
+        trs += (f"<tr><td class='num'>{escape(r.get('week',''))}</td>"
+                f"<td>{escape(r.get('word',''))}</td><td class='num'>{r.get('count','')}</td></tr>")
+    return ("<div style='margin-top:10px'><b>关键词趋势（按周，全局 Top 词）</b></div>"
+            '<table><colgroup><col style="width:20%"><col style="width:55%"><col style="width:25%"></colgroup>'
+            '<thead><tr><th>周</th><th>关键词</th><th>次数</th></tr></thead>'
+            '<tbody>' + trs + "</tbody></table>")
+
+
+def _render_voice_media(voice: list[dict], media: list[dict]) -> str:
+    """语音转写占位 + 媒体归档（第7轮吸收）。"""
+    out = []
+    if voice:
+        out.append(f"<div class='tag' style='margin:8px 0'>语音消息 <b>{len(voice)}</b> 条待转写（需上游语音文件 + ASR，转写后回填 transcript）</div>")
+        trs = "".join(
+            f"<tr><td>{escape(v.get('sender',''))}</td><td class='num'>{escape(v.get('sent_at',''))}</td>"
+            f"<td>{escape(v.get('content',''))}</td><td>{v.get('status','')}</td></tr>"
+            for v in voice[:15])
+        out.append('<table><colgroup><col style="width:22%"><col style="width:18%"><col style="width:44%">'
+                   '<col style="width:16%"></colgroup>'
+                   '<thead><tr><th>发送者</th><th>时间</th><th>内容</th><th>状态</th></tr></thead>'
+                   '<tbody>' + trs + "</tbody></table>")
+    if media:
+        kinds = {}
+        for r in media:
+            kinds[r.get("kind", "?")] = kinds.get(r.get("kind", "?"), 0) + 1
+        summary = " · ".join(f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
+        out.append(f"<div class='tag' style='margin:8px 0'>媒体归档 <b>{len(media)}</b> 项：{escape(summary)}（清单含归档路径提示 media/日期/类型/）</div>")
+        trs = "".join(
+            f"<tr><td>{escape(r.get('sender',''))}</td><td class='num'>{escape(r.get('sent_at',''))}</td>"
+            f"<td>{escape(r.get('kind',''))}</td><td>{escape(r.get('path',''))}</td></tr>"
+            for r in media[:15])
+        out.append('<table><colgroup><col style="width:20%"><col style="width:16%"><col style="width:10%">'
+                   '<col style="width:54%"></colgroup>'
+                   '<thead><tr><th>发送者</th><th>时间</th><th>类型</th><th>归档路径（建议）</th></tr></thead>'
+                   '<tbody>' + trs + "</tbody></table>")
+    return "<br>".join(out) if out else ""
+
+
 def render(out_dir: Path, title: str = "") -> str:
     stats = _read_csv(out_dir / "effective_stats.csv")
     followups = _read_csv(out_dir / "followups.csv")
@@ -906,6 +961,9 @@ def render(out_dir: Path, title: str = "") -> str:
     daily_act = _read_csv(out_dir / "activity_daily.csv")
     msg_types = _read_csv(out_dir / "message_types.csv")
     interactions = _read_csv(out_dir / "interactions.csv")
+    kws_trend = _read_csv(out_dir / "keywords_trend.csv")
+    voice_rows = _read_csv(out_dir / "voice_pending.csv")
+    media_rows2 = _read_csv(out_dir / "media_archive.csv")
     ledger = _read_csv(out_dir / "payment_ledger.csv")
     revokes = _read_csv(out_dir / "revoke_audit.csv")
     funnel = _read_csv(out_dir / "funnel.csv")
@@ -969,8 +1027,8 @@ def render(out_dir: Path, title: str = "") -> str:
         _section("15", "销售漏斗与问题分级", _render_funnel_level(funnel, lv_rows), "咨询→成交卡点 · P0-P3 处理优先级"),
         _section("16", "会话时间线与媒体归档", _render_timeline(timeline, media_rows, trend_md), "客户交互轨迹 · 多模态占位 · 周期环比"),
         _section("17", "@提及与消息明细", _render_mentions(mentions, msg_rows), "关键对接人识别 · 扁平表透视"),
-        _section("18", "年度分析与成员档案", _render_keywords(keywords) + _render_sentiment(sentiment) + _render_members(members), "高频词 TopN · 情感倾向 · 成员完整档案（对齐 WeChatMsg/MemoTrace）"),
-        _section("19", "消息类型与互动网络", _render_message_insight(daily_act, msg_types, interactions), "每日消息量 · 类型占比 · 回复配对（对齐 MemoTrace / WhatsR）"),
+        _section("18", "年度分析与成员档案", _render_keywords(keywords) + _render_keywords_trend(kws_trend) + _render_sentiment(sentiment) + _render_members(members), "高频词 TopN · 关键词趋势 · 情感倾向 · 成员完整档案（对齐 WeChatMsg/MemoTrace）"),
+        _section("19", "消息类型与互动网络", _render_message_insight(daily_act, msg_types, interactions) + _render_voice_media(voice_rows, media_rows2), "每日消息量 · 类型占比 · 回复配对 · 语音转写占位 · 媒体归档（对齐 MemoTrace / WhatsR）"),
     ])
 
     return f"""<!DOCTYPE html>

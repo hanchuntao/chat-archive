@@ -70,6 +70,9 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `activity_daily.csv` | 每日消息量日历：日期/消息/有效/参与人数/积极/消极（对齐 MemoTrace 每日消息量） |
 | `message_types.csv` | 消息类型分布：text/system/image/file/link/voice 占比（对齐 WeChatMsg/wechat-dump） |
 | `interactions.csv` | 成员互动配对：谁回复谁、配对次数、平均响应分钟（对齐 WhatsR 回复时间分析） |
+| `keywords_trend.csv` | 关键词趋势：全局 Top 词按周计数，观察话题随时间变化 |
+| `voice_pending.csv` | 语音转写占位清单：voice 消息 + transcript 回填字段（待上游语音文件 + ASR） |
+| `media_archive.csv` | 媒体归档增强：结构化媒体清单（发送者/时间/类型/归档路径提示） |
 | `mentions.csv` | @提及统计：谁是被 @ 最多的关键对接人 |
 | `messages.csv` | 扁平消息表：时间/发送人/角色/话题/内容，Excel 直接透视 |
 | `assessment.md` | 绩效考核评分 |

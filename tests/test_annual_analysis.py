@@ -89,3 +89,35 @@ def test_round6_report_section19(tmp_path):
     html = (run / "report.html").read_text(encoding="utf-8")
     assert "消息类型与互动网络" in html
     assert "互动配对" in html
+
+
+def test_round7_trend_voice_media(tmp_path):
+    """第7轮吸收：关键词趋势 / 语音转写占位 / 媒体归档增强。"""
+    run = _run_all(tmp_path)
+    assert (run / "keywords_trend.csv").exists()
+    assert (run / "voice_pending.csv").exists()
+    assert (run / "media_archive.csv").exists()
+    trend = (run / "keywords_trend.csv").read_text(encoding="utf-8")
+    assert trend.splitlines()[0].startswith("week,word,count")
+    # 空语音清单不应产生虚假行
+    vp = (run / "voice_pending.csv").read_text(encoding="utf-8").strip()
+    assert vp in ("(无数据)",) or vp.splitlines()[0].startswith("msg_id,sender")
+
+
+def test_round7_report_sections(tmp_path):
+    run = _run_all(tmp_path)
+    html = (run / "report.html").read_text(encoding="utf-8")
+    assert "关键词趋势" in html
+    assert "媒体归档" in html
+
+
+def test_empty_csv_parsed_as_empty():
+    """(无数据) 占位文件读取应返回空列表，不产生虚假行。"""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("rh2", REPO / "skill" / "scripts" / "render_html.py")
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    import tempfile
+    td = Path(tempfile.mkdtemp())
+    (td / "empty.csv").write_text("(无数据)\n", encoding="utf-8")
+    assert m._read_csv(td / "empty.csv") == []
