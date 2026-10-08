@@ -177,14 +177,14 @@ def test_activity_stats():
 def test_inquiry_unanswered():
     msgs = [_msg("客户", "这个多少钱？有货吗", staff=False, t="2026-09-01 10:00"),
             _msg("张三", "收到", staff=True, t="2026-09-01 10:01")]  # 口水不算回复
-    inq, prom = biz.tag_deal_signals(msgs)
+    inq, _ = biz.tag_deal_signals(msgs)
     assert len(inq) == 1
     assert "多少钱" in inq[0]["content"]
 
 
 def test_promise_pending():
     msgs = [_msg("张三", "明天发，放心", staff=True, t="2026-09-01 10:00")]
-    inq, prom = biz.tag_deal_signals(msgs)
+    _, prom = biz.tag_deal_signals(msgs)
     assert len(prom) == 1
     assert "承诺" in prom[0]["content"] or "明天发" in prom[0]["content"]
 
@@ -289,7 +289,7 @@ def test_classify_info_type():
 def test_knowledge_frontmatter_and_info_types():
     msgs = [_msg("客户A", "这个多少钱？", staff=False, t="2026-09-01 10:00"),
             _msg("张三", "500 元，包邮", t="2026-09-01 10:03")]
-    entries, train, ob = biz.build_knowledge(msgs, mask=True)
+    entries, train, _ = biz.build_knowledge(msgs, mask=True)
     assert entries, "应生成知识条目"
     e = entries[0]
     assert e["content"].startswith("---")

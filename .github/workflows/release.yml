@@ -23,10 +23,10 @@ jobs:
         run: pip install -r requirements-dev.txt
 
       - name: 门禁 1 · 单元测试 + 覆盖率 ≥80%
-        run: pytest tests/ -q --cov=chat_archive --cov=skill/scripts --cov-fail-under=80
+        run: pytest tests/ -q --cov=chat_archive --cov=.claude/skills/chat-archive/scripts --cov-fail-under=80
 
       - name: 门禁 2 · ruff 静态检查
-        run: ruff check chat_archive/ skill/scripts/ tests/
+        run: ruff check chat_archive/ .claude/skills/chat-archive/scripts/ tests/
 
       - name: 门禁 3 · mypy 类型检查（数据层）
         run: mypy chat_archive/ --ignore-missing-imports --follow-imports=skip

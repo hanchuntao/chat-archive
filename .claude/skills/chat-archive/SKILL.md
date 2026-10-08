@@ -7,7 +7,7 @@ description: 电商企业微信群/QQ群消息自动化管理与知识沉淀。�
 
 两层架构：**数据层 = chat-archive CLI（清洗/脱敏/入库/检索/周报，本仓库 `chat_archive/` 包）**，
 **业务层 = 本脚本（员工统计/日报/跟进/考核/知识库精修）**。通用 PII 脱敏规则已统一由
-CLI 规则引擎提供（`skill/scripts/chat_archive.py` 的 `mask_pii` 复用 `chat_archive.pipeline.desensitize`）。
+CLI 规则引擎提供（`.claude/skills/chat-archive/scripts/chat_archive.py` 的 `mask_pii` 复用 `chat_archive.pipeline.desensitize`）。
 
 ## 两种入口，同一结果
 

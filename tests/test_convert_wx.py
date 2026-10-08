@@ -17,7 +17,7 @@ PY = sys.executable
 
 
 def _run(*args):
-    return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True)
+    return subprocess.run([PY, str(SCRIPT), *args], capture_output=True, text=True, check=False)
 
 
 def _out(tmp_path, name, data, encoding="utf-8"):

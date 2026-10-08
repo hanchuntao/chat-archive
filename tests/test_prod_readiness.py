@@ -16,7 +16,7 @@ _spec.loader.exec_module(ca)
 
 def test_version_flag():
     r = subprocess.run([sys.executable, str(SCRIPT), "--version"],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30, check=False)
     assert r.returncode == 0 and "chat-archive" in r.stdout
 
 

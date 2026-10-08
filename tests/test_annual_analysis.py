@@ -19,11 +19,11 @@ PY = sys.executable
 def _run_all(out_dir: Path, staff: str = "all"):
     r = subprocess.run(
         [PY, str(SCRIPT), "all", "--input", str(SAMPLE), "--staff", staff, "--out", str(out_dir)],
-        capture_output=True, text=True)
+        capture_output=True, text=True, check=False)
     assert r.returncode == 0, r.stderr[-2000:]
     dirs = [p for p in (out_dir).iterdir() if p.is_dir() and p.name.startswith("20")]
     assert dirs, "无运行结果目录"
-    return sorted(dirs)[-1]
+    return max(dirs)
 
 
 def test_annual_artifacts_generated(tmp_path):
@@ -101,7 +101,7 @@ def test_round7_trend_voice_media(tmp_path):
     assert trend.splitlines()[0].startswith("week,word,count")
     # 空语音清单不应产生虚假行
     vp = (run / "voice_pending.csv").read_text(encoding="utf-8").strip()
-    assert vp in ("(无数据)",) or vp.splitlines()[0].startswith("msg_id,sender")
+    assert vp == "(无数据)" or vp.splitlines()[0].startswith("msg_id,sender")
 
 
 def test_round7_report_sections(tmp_path):

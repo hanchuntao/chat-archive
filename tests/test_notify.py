@@ -15,7 +15,7 @@ _spec.loader.exec_module(ca)
 
 
 class _Capture(BaseHTTPRequestHandler):
-    received = []
+    received: list = []  # noqa: RUF012  # 测试采集器：每用例自行重置
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))

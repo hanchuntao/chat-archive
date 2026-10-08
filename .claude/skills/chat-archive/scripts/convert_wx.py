@@ -13,8 +13,8 @@ wechat-cli / 手工文本 → chat-archive 标准 JSON 转换器
 输出为标准字段：content / senderDisplayName / formattedTime / type / source
 
 用法:
-    python3 skill/scripts/convert_wx.py --input 群记录.json --output 标准.json
-    python3 skill/scripts/convert_wx.py --input 群记录.txt --output 标准.json
+    python3 .claude/skills/chat-archive/scripts/convert_wx.py --input 群记录.json --output 标准.json
+    python3 .claude/skills/chat-archive/scripts/convert_wx.py --input 群记录.txt --output 标准.json
 """
 import argparse
 import json
@@ -54,7 +54,7 @@ def detect_type(content: str) -> str:
 def convert_text_lines(lines) -> list:
     out = []
     for line in lines:
-        line = str(line).strip()
+        line = str(line).strip()  # noqa: PLW2901  # 循环变量复用：清洗后行文本
         if not line:
             continue
         m = LINE_PAT.match(line)

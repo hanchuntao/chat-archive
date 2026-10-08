@@ -53,7 +53,7 @@ def test_streaming_json_cross_chunk_element(tmp_path):
     """单个超 64KB 元素跨 chunk 读取。"""
     p = tmp_path / "big.json"
     p.write_text(json.dumps([{"sender": "s", "content": "x" * 200000, "id": i} for i in range(3)]), encoding="utf-8")
-    msgs, fmt = ca.parse_file(p)
+    msgs, _ = ca.parse_file(p)
     assert len(msgs) == 3 and len(msgs[0]["content"]) == 200000
 
 

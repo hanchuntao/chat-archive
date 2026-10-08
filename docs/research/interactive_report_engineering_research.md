@@ -9,7 +9,7 @@
 
 ## 一、现状诊断（写在前面）
 
-通过阅读 `skill/scripts/render_html.py`（1062 行）确认：
+通过阅读 `.claude/skills/chat-archive/scripts/render_html.py`（1062 行）确认：
 - **当前 report.html 是纯静态 HTML+CSS，全文仅 1 处 `<style>`，0 处 `<script>`**——没有任何 JS 交互。
 - 数据来自快照目录下已生成的 CSV/MD 文件（`effective_stats.csv`、`daily_reports/`、`followups.csv`、`knowledge/`、`assessment.csv`），在 Python 端一次性读入并渲染为表格/列表。
 - 已有能力：`chat-archive search`（FTS5 CLI）、`chat-archive stats --group sender/day/type/category`、`--json` 输出、可选 Chroma 向量、LLM 降级规则版。

@@ -1,4 +1,4 @@
-"""业务层（skill/scripts/chat_archive.py）测试：
+"""业务层（.claude/skills/chat-archive/scripts/chat_archive.py）测试：
 --staff 三种语义、话题可配置、全员员工知识库聚合、运行一次单份结果 + latest 入口。
 """
 
@@ -163,7 +163,7 @@ def test_load_rules_from_config(monkeypatch):
 
 def test_weekly_subcommand_exists():
     r = subprocess.run([sys.executable, str(REPO / "chat-archive.py"), "--help"],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30, check=False)
     assert "weekly" in r.stdout and "report" in r.stdout
 
 
@@ -176,9 +176,9 @@ def test_kb_sync_fake_key_exits_nonzero(tmp_path):
     out = tmp_path / "out"
     (out / "knowledge").mkdir(parents=True)
     (out / "knowledge" / "a.md").write_text("# a\n", encoding="utf-8")
-    r = subprocess.run([sys.executable, str(REPO / "skill" / "scripts" / "sync_kb.py"),
+    r = subprocess.run([sys.executable, str(REPO / ".claude" / "skills" / "chat-archive" / "scripts" / "sync_kb.py"),
                         "--out", str(out), "--to", "ima", "--config", str(cfg_p)],
-                       capture_output=True, text=True, timeout=40)
+                       capture_output=True, text=True, timeout=40, check=False)
     assert r.returncode == 1, "ima 认证失败应非零退出"
     assert "ima API 错误" in r.stderr
 
@@ -214,7 +214,7 @@ def test_unanswered_customer_end_of_group():
 def test_unanswered_in_staff_all_mode():
     """--staff all 下全员是员工，问句消息也应判漏回复（兼容零参数默认配置）。"""
     msgs = [_msg("客户G", "在吗？售后电话是多少", staff=True, t="2026-09-01 20:30")]
-    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
+    _, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
     assert len(unanswered) == 1, "all 模式下问句无人回也应判漏回复"
 
 
@@ -222,7 +222,7 @@ def test_cross_group_no_mis_pair():
     """A 群客户提问不跟 B 群员工回复配对（修复跨群错配 bug）。"""
     msgs = [_msg("客户A", "多久能发货？", staff=False, t="2026-09-01 09:00", group="群A"),
             _msg("李四", "马上安排", staff=True, t="2026-09-01 09:30", group="群B")]
-    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
+    _, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES, _scheme())
     assert len(unanswered) == 1 and unanswered[0]["group_id"] == "群A", "跨群不应配对，A 群提问应判漏回复"
 
 
@@ -231,9 +231,9 @@ def test_duty_wildcard_deduction():
     msgs = [_msg("客户A", "多久能发货？", staff=False, t="2026-09-01 09:00"),
             _msg("李四", "马上安排", staff=True, t="2026-09-01 10:00"),   # 60min > 300s 超时
             _msg("客户B", "在吗？", staff=False, t="2026-09-01 20:30")]
-    results, unanswered = biz.run_assessment(msgs, biz.DEFAULT_RULES,
-                                             _scheme(duty={"*": "李四"}))
-    row = [r for r in results if r["userid"] == "李四"][0]
+    results, _ = biz.run_assessment(msgs, biz.DEFAULT_RULES,
+                                      _scheme(duty={"*": "李四"}))
+    row = next(r for r in results if r["userid"] == "李四")
     assert row["timeout_count"] == 1 and row["unanswered_count"] == 1, "通配 duty 应计入超时与漏回复"
     assert row["deductions"].get("回复超时") == -5 and row["deductions"].get("漏回复") == -5
 

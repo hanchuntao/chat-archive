@@ -76,7 +76,7 @@ def test_llm_configured(monkeypatch):
 
 def test_llm_settings_bad_config(monkeypatch):
     def _bad(*a, **k):
-        raise Exception("corrupt json")
+        raise ValueError("corrupt json")
 
     monkeypatch.setattr(llm_mod.json, "loads", _bad)
     monkeypatch.delenv("CHAT_ARCHIVE_LLM_API_KEY", raising=False)
@@ -252,7 +252,7 @@ def test_search_fts_exception_fallback(db: Database):
 
         def execute(self, sql, *a, **kw):
             if "messages_fts MATCH" in sql:
-                raise Exception("fts broken")
+                raise RuntimeError("fts broken")
             return self._r.execute(sql, *a, **kw)
 
         def commit(self):
@@ -402,16 +402,16 @@ def test_iter_messages_structures(tmp_path: Path):
     f = tmp_path / "s.json"
     f.write_text('{"messageList": [{"content": "a"}]}', encoding="utf-8")
     doc = json.loads(f.read_text(encoding="utf-8"))
-    assert [m for m in wj._iter_messages(doc)] == [{"content": "a"}]
+    assert list(wj._iter_messages(doc)) == [{"content": "a"}]
 
     f.write_text('{"data": [{"content": "b"}]}', encoding="utf-8")
-    assert [m for m in wj._iter_messages(json.loads(f.read_text(encoding="utf-8")))] == [{"content": "b"}]
+    assert list(wj._iter_messages(json.loads(f.read_text(encoding="utf-8")))) == [{"content": "b"}]
 
-    assert [m for m in wj._iter_messages([{"content": "c"}])] == [{"content": "c"}]
+    assert list(wj._iter_messages([{"content": "c"}])) == [{"content": "c"}]
 
     # 单条对象直接是消息
     doc = {"content": "single", "sender": "A"}
-    assert [m for m in wj._iter_messages(doc)] == [doc]
+    assert list(wj._iter_messages(doc)) == [doc]
 
     with pytest.raises(TypeError, match="顶层结构"):
         list(wj._iter_messages("not-a-dict"))

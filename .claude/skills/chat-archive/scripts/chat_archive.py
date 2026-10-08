@@ -33,6 +33,7 @@ import subprocess
 import sys
 from collections import OrderedDict
 from datetime import datetime, timedelta
+from pathlib import Path
 
 __version__ = "2.0.0"  # 生产就绪：业务 CLI 版本号（与 version.json 输出格式适配表一致）
 
@@ -64,14 +65,20 @@ def init_log(log_file: str = "", log_level: str = "INFO") -> None:
     _LOG_LEVEL = {"DEBUG": 10, "INFO": 20, "ERROR": 40}.get(log_level.upper(), 20)
     if log_file:
         _json_log("INFO", "log.init", file=log_file, log_level=log_level.upper())
-from pathlib import Path
 
 # ---- 复用 chat-archive CLI 数据管道（脱敏规则引擎），保证 PII 规则全局唯一 ----
-# 路径: skill/scripts/chat_archive.py -> ~/work/chat-archive
+# 路径: .claude/skills/chat-archive/scripts/chat_archive.py -> 项目根
+def _find_project_root() -> Path:
+    """项目根 = 向上找含 pyproject.toml + chat_archive/ 包的目录（对符号链接/打包/移动健壮）。"""
+    _here = Path(__file__).resolve().parent
+    for _p in (_here, *_here.parents):
+        if (_p / "pyproject.toml").is_file() and (_p / "chat_archive").is_dir():
+            return _p
+    return _here.parents[2]  # 兜底（原行为）
 if getattr(sys, "frozen", False):
     _CLI_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 else:
-    _CLI_ROOT = Path(__file__).resolve().parents[2]
+    _CLI_ROOT = _find_project_root()
 if str(_CLI_ROOT) not in sys.path:
     sys.path.insert(0, str(_CLI_ROOT))
 from chat_archive.llm import (
@@ -208,7 +215,7 @@ def load_config() -> dict:
     文件被外部修改后签名变化自动重读（测试/用户改配置即时生效）。
     """
     global _CONFIG_CACHE, _CONFIG_CACHE_SIG
-    cfg_path = Path(__file__).resolve().parents[2] / "config.json"
+    cfg_path = _find_project_root() / "config.json"
     sig = (0, 0)
     if cfg_path.exists():
         try:

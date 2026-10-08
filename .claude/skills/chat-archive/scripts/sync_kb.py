@@ -31,7 +31,12 @@ IMA_WIKI = IMA_BASE + "/openapi/wiki/v1"
 # ---------------------------------------------------------------- 配置
 
 def load_config(cfg_path: str | None) -> dict:
-    path = Path(cfg_path) if cfg_path else Path(__file__).resolve().parents[2] / "config.json"
+    if cfg_path:
+        path = Path(cfg_path)
+    else:
+        # 项目根 = 向上找含 pyproject.toml 的目录（对符号链接/移动健壮）
+        here = Path(__file__).resolve().parent
+        path = next((p / "config.json" for p in (here, *here.parents) if (p / "pyproject.toml").is_file()), here.parents[2] / "config.json")
     data: dict = {}
     if path.exists():
         try:
@@ -110,7 +115,7 @@ def export_for_ima(out: Path) -> str:
         "- 这些文件是 chat-archive 产出的**已脱敏**知识条目（Markdown）。\n"
         "- 手动导入：打开 ima（ima.qq.com 或客户端）→ 知识库 → 添加文件 → 选择本目录的 .md 文件。\n"
         "- 自动导入：在 https://ima.qq.com/agent-interface 生成 API Key 与 Client ID，填入仓库根 "
-        "`config.json` 的 `knowledge.ima`，然后运行 `python3 skill/scripts/sync_kb.py --out <out目录>`。\n",
+        "`config.json` 的 `knowledge.ima`，然后运行 `python3 .claude/skills/chat-archive/scripts/sync_kb.py --out <out目录>`。\n",
         encoding="utf-8")
     return f"ima：未配置 API Key，已导出 {n} 份脱敏产物 → {dest}/（手动导入或配置 Key 后自动上传）"
 

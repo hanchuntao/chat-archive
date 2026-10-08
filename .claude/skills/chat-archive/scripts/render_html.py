@@ -55,7 +55,7 @@ def _parse_daily(path: Path) -> dict:
     name, date = (m.group(1).strip(), m.group(2).strip()) if m else (path.stem, "")
     items, cur = [], None
     for line in txt.splitlines():
-        line = line.strip()
+        line = line.strip()  # noqa: PLW2901  # 循环变量复用：清洗后行文本
         if line.startswith("## "):
             cur = line[3:].strip()
             continue
@@ -72,7 +72,7 @@ def _parse_discussion(path: Path) -> list[dict]:
     txt = path.read_text(encoding="utf-8", errors="ignore")
     out, cur = [], None
     for line in txt.splitlines():
-        line = line.strip()
+        line = line.strip()  # noqa: PLW2901  # 循环变量复用：清洗后行文本
         if line.startswith("## "):
             cur = {"topic": line[3:].strip(), "rows": []}
             out.append(cur)
@@ -89,7 +89,7 @@ def _parse_knowledge(dir_path: Path) -> list[dict]:
     if not dir_path.exists():
         return out
     for p in sorted(dir_path.glob("*.md")):
-        if p.name in ("onboarding.md",):
+        if p.name == "onboarding.md":  # FURB171 单元素成员测试简化为相等判断
             continue
         txt = p.read_text(encoding="utf-8", errors="ignore")
         title = ""
@@ -99,7 +99,7 @@ def _parse_knowledge(dir_path: Path) -> list[dict]:
         qa = []
         cur = None
         for line in txt.splitlines():
-            line = line.strip()
+            line = line.strip()  # noqa: PLW2901  # 循环变量复用：清洗后行文本
             if line.startswith("问："):
                 cur = [line[2:].strip(), ""]
             elif line.startswith("答：") and cur:
@@ -586,9 +586,10 @@ def _render_signals(rows: list[dict]) -> str:
     if not rows:
         return "<p>（无信号数据）</p>"
     cols = ["userid", "total", "success", "frustration", "workflow", "request", "confidence"]
-    head = "".join(f"<th>{escape({'userid': '发送人', 'total': '总消息', 'success': 'Success',
-                                  'frustration': 'Frustration', 'workflow': 'Workflow',
-                                  'request': 'Request', 'confidence': '置信度'}.get(k, k))}</th>" for k in cols)
+    _sig_zh = {"userid": "发送人", "total": "总消息", "success": "Success",
+               "frustration": "Frustration", "workflow": "Workflow",
+               "request": "Request", "confidence": "置信度"}
+    head = "".join(f"<th>{escape(_sig_zh.get(k, k))}</th>" for k in cols)
     body = []
     for r in sorted(rows, key=lambda x: -int(x.get("signal_count", 0) or 0)):
         if not r.get("userid"):

@@ -19,9 +19,9 @@ def _load(name: str, mod_name: str):
     return mod
 
 
-rh = _load("skill/scripts/render_html.py", "ca_rh_topup")
-sk = _load("skill/scripts/sync_kb.py", "ca_sk_topup")
-biz = _load("skill/scripts/chat_archive.py", "ca_biz_topup")
+rh = _load(".claude/skills/chat-archive/scripts/render_html.py", "ca_rh_topup")
+sk = _load(".claude/skills/chat-archive/scripts/sync_kb.py", "ca_sk_topup")
+biz = _load(".claude/skills/chat-archive/scripts/chat_archive.py", "ca_biz_topup")
 
 
 def _write(out: Path, rel: str, text: str):
@@ -225,7 +225,7 @@ def test_ingest_redacted_and_hits(tmp_path, monkeypatch):
         def apply(self, content):
             return _FakeDR(content)
 
-    monkeypatch.setattr("chat_archive.pipeline.ingest.Desensitizer", lambda: _FakeD())
+    monkeypatch.setattr("chat_archive.pipeline.ingest.Desensitizer", lambda: _FakeD())  # noqa: PLW0108  # 工厂形态保持可读
     st = ingest_file(dm, bad, chat_id="g5")
     assert st.redacted == 1
 

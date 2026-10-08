@@ -26,7 +26,7 @@ coverage report --omit='*/tests/*' --fail-under=95 -m
 | 路径 | 入口 | 验证点 |
 |---|---|---|
 | A. 数据层 CLI | `chat-archive --db X.db import/search/stats/report/info/backup` | 入库条数、检索命中、统计、周报、备份可打开 |
-| B. 业务层 subprocess | `python3 skill/scripts/chat_archive.py all --input ... --staff all` | 28 项产物齐全 + manifest.json 完整性 + verify 通过、快照/latest 正常 |
+| B. 业务层 subprocess | `python3 .claude/skills/chat-archive/scripts/chat_archive.py all --input ... --staff all` | 28 项产物齐全 + manifest.json 完整性 + verify 通过、快照/latest 正常 |
 | C. 业务层纯函数 | pytest 直接调用模块函数 | 与 B 同输入同断言（内存态与文件态一致） |
 
 补充验证：`--mask-all` 产物全链路无明文 PII/真名；`kb-draft` 只产知识库+FAQ；`--incremental` 锚点过滤；`verify` 快照完整性校验（含篡改检测）；db schema 版本迁移（旧库自动升级）。

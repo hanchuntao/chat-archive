@@ -198,8 +198,8 @@ def test_main_llm_ok(tmp_path, monkeypatch):
     monkeypatch.setattr(biz, "ai_build_knowledge", _kb)
 
     out = tmp_path / "out"
-    text = _run_main(["ca", "all", "--input", str(ECOM), "--staff", "all",
-                      "--out", str(out)], monkeypatch)
+    _ = _run_main(["ca", "all", "--input", str(ECOM), "--staff", "all",
+                     "--out", str(out)], monkeypatch)
     dirs = _stamp_dirs(out)
     assert len(dirs) == 1, dirs
     d = out / dirs[0]

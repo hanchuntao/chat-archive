@@ -26,3 +26,7 @@ dist/
 # 静态检查缓存
 .mypy_cache/
 .ruff_cache/
+
+# skill 符号链接（源在 .claude/skills/chat-archive/，勿提交链接）
+skill
+.deepcode/skills/

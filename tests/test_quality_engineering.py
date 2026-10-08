@@ -16,7 +16,7 @@ from chat_archive.db import SCHEMA_VERSION, Database
 
 
 def _import_business():
-    """业务层脚本 skill/scripts/chat_archive.py 与数据层包同名，用 importlib 显式加载。"""
+    """业务层脚本 .claude/skills/chat-archive/scripts/chat_archive.py 与数据层包同名，用 importlib 显式加载。"""
     spec = importlib.util.spec_from_file_location(
         "biz_archive", str(REPO / "skill" / "scripts" / "chat_archive.py"))
     mod = importlib.util.module_from_spec(spec)

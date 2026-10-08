@@ -1,6 +1,6 @@
 """导入器: 解析明文 TXT/Markdown/CSV 聊天记录（与业务层同口径）。
 
-行格式（与 skill/scripts/chat_archive.py 的解析正则一致）:
+行格式（与 .claude/skills/chat-archive/scripts/chat_archive.py 的解析正则一致）:
   [2026-09-01 20:11] 张三: 内容        时间前缀
   张三 2026-09-01 20:11: 内容         发送人前置
   张三(123456789) 2026-09-01 20:11: 内容   QQ 消息管理器导出（昵称+QQ号）
