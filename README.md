@@ -27,9 +27,9 @@ python3 /Users/chhan/work/chat-archive/skill/scripts/chat_archive.py all \
 > **日报日期**：不指定 `--date` 时，若今天无群消息则自动取「消息最后一天」（导入历史记录也能出内容），并打印提示。
 （`sample_data/sample_chat.json` 是安全内推群样例，不含电商话题，跑出来知识库为空属正常；`ecom_chat.txt` 是电商客服群样例，知识库有内容。）
 
-**第 2 步 · 换成你自己的群记录**（只需改 1 个文件；**默认已填好样例配置，拿到即可直接跑第 3 步**）：
+**第 2 步 · 换成你自己的群记录**（只需改 1 个文件；仓库已带样例配置，拿到即可直接跑第 3 步）：
 
-打开 `config.json`，看 `defaults`（**当前已填好样例配置，可直接跑第 3 步**）：
+打开 `config.json`，看 `defaults`：
 
 ```json
 "defaults": {
@@ -56,26 +56,31 @@ python3 /Users/chhan/work/chat-archive/chat-archive.py
 | `latest_report.html` | **最新看板固定入口**（永远指向最近一次运行，浏览器可收藏，路径不变） |
 | `latest.txt` | 最新结果目录的**完整绝对路径**（脚本/自动化读取用） |
 | `report.html` | 本次结果目录里的汇总看板 |
-| `effective_stats.md` | 谁在认真回复、谁消极怠工 |
-| `daily_reports/` | 每个员工的工作日报 |
-| `followups.md` | 待跟进事项 |
-| `knowledge/` | 沉淀的知识库（脱敏，含 `training_clean.jsonl` 清洗训练集、`faq_drafts.md` 高频问答草稿） |
-| `funnel.csv` | 销售漏斗：客户卡在哪个环节（询价没回/拍下没付款一眼可见） |
-| `insight_level.csv` | 客户痛点分级 P0-P3（P0 最优先解决） |
-| `trend.md` | 周期环比：本期 vs 上期关键指标 + 新冒头问题 |
-| `timeline.json` / `media_manifest.csv` | 客户会话时间线 / 图片语音等占位清单 |
-| `keywords.csv` | 年度高频词 TopN（词云数据源，对齐 WeChatMsg/MemoTrace 年度报告） |
+| `effective_stats.csv`（+.md/.yml） | 谁在认真回复、谁消极怠工（CSV 主产物，MD 人读版 + YAML 机器版伴生） |
+| `daily_reports/` | 每个员工的工作日报（每人一份 Markdown） |
+| `followups.csv`（+.md/.yml） | 待跟进事项（含漏回复/丢单风险标记） |
+| `knowledge/` | 沉淀的知识库（脱敏，按话题分类的 `.md` + `training_clean.jsonl` 清洗训练集 + `faq_drafts.md` 高频问答草稿 + `onboarding.md` 新员工培训手册） |
+| `assessment.csv`（+assessment_notes.md/.yml） | 绩效考核评分 + 证据化评语（每条扣分引原文证据） |
+| `activity.csv` | 群活跃度：话唠榜 / 活跃时段 / 熬夜冠军 |
+| `chat_compact.txt` | 按时段压缩的群聊文本（LLM 预处理原料，长群不丢上下文） |
+| `manifest.json` | 本次运行快照（产物 SHA256 + 参数），`verify` 子命令校验完整性 |
+
+**分析增强**（除注明外均为 CSV + 同名 `.yml` 伴生）：
+
+| 文件 | 是什么 |
+|---|---|
+| `funnel.csv` / `insight_level.csv` / `trend.md` | 销售漏斗（客户卡在哪个环节）/ 客户痛点分级 P0-P3 / 周期环比趋势 |
+| `timeline.json` / `dialogues.json` | 客户会话时间线 / 对话结构化（双人报告数据源） |
+| `keywords.csv` / `keywords_trend.csv` | 高频词 TopN（词云数据源）/ 关键词按周趋势 |
 | `sentiment.json` | 情感倾向：总体 / 每日趋势 / 成员积极消极（纯标准库词表） |
-| `members.csv` | 群成员完整信息表：发言/有效/口水率/活跃天数/字数/被@/情感/首末发言/高峰/熬夜 |
-| `activity_daily.csv` | 每日消息量日历：日期/消息/有效/参与人数/积极/消极（对齐 MemoTrace 每日消息量） |
-| `message_types.csv` | 消息类型分布：text/system/image/file/link/voice 占比（对齐 WeChatMsg/wechat-dump） |
-| `interactions.csv` | 成员互动配对：谁回复谁、配对次数、平均响应分钟（对齐 WhatsR 回复时间分析） |
-| `keywords_trend.csv` | 关键词趋势：全局 Top 词按周计数，观察话题随时间变化 |
-| `voice_pending.csv` | 语音转写占位清单：voice 消息 + transcript 回填字段（待上游语音文件 + ASR） |
-| `media_archive.csv` | 媒体归档增强：结构化媒体清单（发送者/时间/类型/归档路径提示） |
+| `members.csv` / `sessions.csv` / `messages.csv` | 成员画像 / 会话表 / 扁平消息表（Excel 直接透视） |
+| `activity_daily.csv` / `message_types.csv` / `interactions.csv` | 每日消息量日历 / 消息类型分布 / 成员互动配对（谁回复谁、平均响应分钟） |
+| `voice_pending.csv` / `media_archive.csv` / `media_manifest.csv` | 语音转写占位 / 媒体归档清单 / 图片语音占位 |
 | `mentions.csv` | @提及统计：谁是被 @ 最多的关键对接人 |
-| `messages.csv` | 扁平消息表：时间/发送人/角色/话题/内容，Excel 直接透视 |
-| `assessment.md` | 绩效考核评分 |
+| `behavior.csv` / `commitment_review.csv` / `customer_profiles.csv` | 行为画像 / 承诺兑现审查 / 客户画像（漏回复 SOP 提醒） |
+| `sla.csv` / `satisfaction.csv` / `health.csv` | 响应 SLA / 满意度 / 群健康度 |
+| `sop_compliance.csv` / `signal.csv` / `revoke_audit.csv` / `pending.csv` / `payment_ledger.csv` | 话术合规 / 业务信号 / 防撤回审计 / 待办 / 支付台账 |
+| `chatlab_export.jsonl` | ChatLab 标准 JSONL 导出（对齐行业格式） |
 
 **第 5 步（可选）· 让结果更聪明**：在 `config.json` 的 `llm.api_key` 填你的 Key（DeepSeek 或任意 OpenAI 兼容服务），日报/要点/知识库自动走 AI 提炼。
 
@@ -143,11 +148,13 @@ python3 -m pytest tests/ -q
 
 ## 质量与测试
 
-- **测试**：296 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支）。
+- **测试**：352 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支、ima 签名与幂等）。
 - **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%（convert_wx.py 已补 import 直调测试至 99%）。
 - **能力补强（第 5 轮）**：① db schema 版本化迁移（PRAGMA user_version，旧库自动升级、未来库拒绝）；② 每次运行生成 `manifest.json`（产物 SHA256 + 运行参数），`verify` 子命令校验快照完整性（篡改/缺失/多余检测）；③ 知识库条目级去重（相同问答不重复入库）。
 - **第 8 轮能力吸收（P0+P1）**：report 交互化（ca-data + 全局搜索高亮 + 表格排序 + ECharts 日历热图/桑基图/关系图 + 消息回放时间线）；Webhook/邮件主动触达；多群月报 + 员工排名；DISCLAIMER/THANKS 合规文档；SQLite PRAGMA 加固（WAL/busy_timeout）；PyInstaller 打包 + CI 门禁；MCP Server（JSON-RPC + 本地问答检索）；双人对话报告 `pair`；防撤回位（recalled 列）；知识库第 8 类（公众号文章）；周×小时活跃热图 + 词汇离散度 TTR/HHI；客户画像聚合（漏回复 SOP 提醒）；FTS5 BM25 排序优化。
 - **第 8 轮能力吸收（P2）**：CSV 产物 YAML 伴生版；ChatLab 标准 JSONL 导出；`--active-days` 活跃窗口；行业规则包（config.industry）；知识库质量评分（quality_scores.csv）；report 高频词云模块；`watch` 守护（mtime 变化自动重跑）；pair 双向平均回复延迟；MCP Server REST API（/api/health、/api/search、/api/stats、/api/keywords）；version.json 格式适配表。
+- **生产就绪（第 9 轮）**：ruff 1576→0 + mypy 门禁；LLM 提炼真实链路（本地 mock OpenAI 17 次请求验证鉴权/脱敏提示词）；webhook/email 真实发送（本地双接收端实测，Webhook 200/40 事件）；watch 4 分钟压测内存 1.00x 无泄漏 + 优雅退出（SIGINT/SIGTERM）；mcp --db 增量库幂等（591 插入→0 插入 606 跳过）；PyInstaller 真打包 23MB onedir 全套冒烟；kb-sync/ima 链路闭环（local 就地/复制、ima 未配 Key 降级导出）；Windows 静态兼容审计（显式 UTF-8/控制台重配置/子进程编码）。
+- **ima 真实链路（第 10 轮）**：真实 API 上传 5/5 成功、知识库侧 content_count 实时增加；search/addable 字段不一致兼容（kb_id/kb_name vs id/name）；COS 标准域名签名 + token 签入（custom_domain 实测 403）；签名窗口用凭证 start_time;expired_time；错误透传 HTTP 响应体；同批次重跑内容未变自动跳过（SHA256 幂等 state，ima 无去重 API）；测试/CI 用 `CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG=1` 隔离真实密钥。
 - **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
 - **规范文档**：`specs/architecture.md`（模块职责与主流软件对齐）、`specs/data-model.md`（SQLite 表结构与 FTS5）、`specs/privacy.md`（脱敏/合规红线）、`specs/testing.md`（测试策略与覆盖率口径）。
 - **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
@@ -157,7 +164,7 @@ python3 -m pytest tests/ -q
 | 类型 | 目录/文件 | 说明 |
 |---|---|---|
 | **你要用的** | `chat-archive.py` + `bin/` | 命令行入口。`bin/chat-archive` 是 3 行 bash 包装（转发到 `chat-archive.py`），加 PATH 即可当命令用；也可直接 `python3 <仓库根>/chat-archive.py` |
-| | `config.json` | 唯一需要改的配置文件（defaults / llm / knowledge / snapshot） |
+| | `config.json` | 唯一需要改的配置文件（20 个配置段，见「配置」章节；真实密钥放 `config.local.json`） |
 | | `skill/` | AI Skill（SKILL.md + scripts 业务层），已符号链接挂到各工具，日常不用动 |
 | **参考用** | `README.md`、`sample_data/`、`tests/` | 文档、样例数据、测试 |
 | **不用管** | `chat_archive/`（核心代码包）、`pyproject.toml`、`requirements.txt` | 内部实现与打包声明，不接触也能正常用 |
@@ -487,11 +494,13 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 }
 ```
 
+> 完整 `config.json` 含 **20 个配置段**（以上为核心段示例）：`defaults`（零参数输入/员工/输出）、`snapshot`（快照保留）、`llm`（AI 提炼）、`knowledge`（本地/向量/ima）、`topics`（知识库话题词）、`assessment`（考核方案+违规话术）、`memory`（跨次记忆锚点）、`activity`（活跃度）、`insight`（需求洞察）、`signals`（业务信号）、`compact`（压缩）、`verify`（快照校验）、`report`（看板）、`incremental`（增量）、`sla`/`problem_level`/`faq`（服务指标/问题分级/FAQ 规则）、`webhook`（通知触达）、`industry`（行业规则包）、`output`（默认输出目录）。每段均带注释，按需修改；未列出的段保持默认即可。
+
 - `defaults.input`：**零参数模式的默认输入**（CLI 直接运行 `chat-archive` 或 AI 一句话触发时使用）；`defaults.staff`/`defaults.out` 可选，不填则显式传参或使用默认输出目录。
 - `llm`：AI 提炼配置（`report --llm` 用）；`base_url`/`model` 可换任意 OpenAI 兼容服务。
 - `snapshot.keep`：`out/` 下保留最近 N 份结果目录（每次运行一份），超出自动清理；`0` = 永久保留。运行时可用 `--keep-snapshots N` 临时覆盖。
 - `topics`：**知识库话题规则**，换成你的行业关键词（如安全/IT：漏洞、CVE、内推、面试…），改这里不用改代码；不配置时用内置电商话题
-- `latest`：每次运行后自动更新 `out/latest_report.html`（最新看板固定入口）+ `out/latest.txt`（最新结果目录名），路径固定可收藏
+- **输出行为（非配置项）**：每次运行后自动生成 `out/latest_report.html`（最新看板固定入口）+ `out/latest.txt`（最新结果目录名），路径固定可收藏，无需配置。
 - `assessment`：**考核方案与合规规则**（基准分/超时扣分/违规扣分/口水阈值/加分等 + `rules` 违规话术清单），改这里即改考核制度；命令行 `--scheme`/`--rules-file` 可临时覆盖，优先级更高
 - `knowledge.local.dir`：本地知识库目录，**可填 Obsidian vault 路径等任意绝对路径**（见下节）。
 - `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成（**只放 `config.local.json`**，见文末「密钥隔离」提示）。
