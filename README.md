@@ -224,6 +224,9 @@ chat-archive
 
 ## Linux / CentOS 使用
 
+> 本工具 **Windows / macOS / Linux 三平台均支持**：Windows 见上节，macOS 见「快速开始」。
+> 本节只讲 Linux 的**系统依赖坑**（CentOS 默认环境缺三样东西，Ubuntu/Debian 一般开箱即用）。
+
 CentOS 7/8 默认 Python 版本过低（3.6/3.8），**本项目要求 Python ≥ 3.10**（用了 `dict[str,...]`、`X | None` 等新语法）：
 
 ```bash
