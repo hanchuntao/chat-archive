@@ -149,15 +149,14 @@ python3 -m pytest tests/ -q
 ## 质量与测试
 
 - **测试**：352 项全绿（`python3 -m pytest tests/ -q`），覆盖数据层（导入/清洗/脱敏/检索/统计/报告/向量/CLI）与业务层（全流程 main 直调、辅助脚本、LLM 降级、错误分支、ima 签名与幂等）。
-- **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%（convert_wx.py 已补 import 直调测试至 99%）。
-- **能力补强（第 5 轮）**：① db schema 版本化迁移（PRAGMA user_version，旧库自动升级、未来库拒绝）；② 每次运行生成 `manifest.json`（产物 SHA256 + 运行参数），`verify` 子命令校验快照完整性（篡改/缺失/多余检测）；③ 知识库条目级去重（相同问答不重复入库）。
-- **第 8 轮能力吸收（P0+P1）**：report 交互化（ca-data + 全局搜索高亮 + 表格排序 + ECharts 日历热图/桑基图/关系图 + 消息回放时间线）；Webhook/邮件主动触达；多群月报 + 员工排名；DISCLAIMER/THANKS 合规文档；SQLite PRAGMA 加固（WAL/busy_timeout）；PyInstaller 打包 + CI 门禁；MCP Server（JSON-RPC + 本地问答检索）；双人对话报告 `pair`；防撤回位（recalled 列）；知识库第 8 类（公众号文章）；周×小时活跃热图 + 词汇离散度 TTR/HHI；客户画像聚合（漏回复 SOP 提醒）；FTS5 BM25 排序优化。
-- **第 8 轮能力吸收（P2）**：CSV 产物 YAML 伴生版；ChatLab 标准 JSONL 导出；`--active-days` 活跃窗口；行业规则包（config.industry）；知识库质量评分（quality_scores.csv）；report 高频词云模块；`watch` 守护（mtime 变化自动重跑）；pair 双向平均回复延迟；MCP Server REST API（/api/health、/api/search、/api/stats、/api/keywords）；version.json 格式适配表。
-- **生产就绪（第 9 轮）**：ruff 1576→0 + mypy 门禁；LLM 提炼真实链路（本地 mock OpenAI 17 次请求验证鉴权/脱敏提示词）；webhook/email 真实发送（本地双接收端实测，Webhook 200/40 事件）；watch 4 分钟压测内存 1.00x 无泄漏 + 优雅退出（SIGINT/SIGTERM）；mcp --db 增量库幂等（591 插入→0 插入 606 跳过）；PyInstaller 真打包 23MB onedir 全套冒烟；kb-sync/ima 链路闭环（local 就地/复制、ima 未配 Key 降级导出）；Windows 静态兼容审计（显式 UTF-8/控制台重配置/子进程编码）。
-- **ima 真实链路（第 10 轮）**：真实 API 上传 5/5 成功、知识库侧 content_count 实时增加；search/addable 字段不一致兼容（kb_id/kb_name vs id/name）；COS 标准域名签名 + token 签入（custom_domain 实测 403）；签名窗口用凭证 start_time;expired_time；错误透传 HTTP 响应体；同批次重跑内容未变自动跳过（SHA256 幂等 state，ima 无去重 API）；测试/CI 用 `CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG=1` 隔离真实密钥。
-- **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
-- **规范文档**：`docs/specs/architecture.md`（模块职责与主流软件对齐）、`docs/specs/data-model.md`（SQLite 表结构与 FTS5）、`docs/specs/privacy.md`（脱敏/合规红线）、`docs/specs/testing.md`（测试策略与覆盖率口径）。
+- **覆盖率**：97%（`--fail-under=95` 门禁，CI 强制）；单模块全部 ≥95%。
+- **静态门禁**：ruff 0 告警 + mypy 通过（CI 强制）。
+- **真实链路实测**（非模拟）：LLM 提炼（本地 mock OpenAI 验证鉴权/脱敏提示词）；webhook/email 发送（本地双接收端实测）；腾讯 ima 知识库上传 5/5 成功（COS 签名 + 同批次重跑幂等跳过）；PyInstaller 打包产物全套冒烟。
+- **数据健壮性**：db schema 版本化迁移（PRAGMA user_version，旧库自动升级）；每次运行 `manifest.json` 快照（SHA256），`verify` 校验完整性；知识库条目级去重；SQLite WAL/busy_timeout 加固；大文件流式读取（41.9MB TXT 峰值 ~286MB）。
+- **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在数据层 CLI / 业务层 `all` / 单元直调三路断点一致（员工消息数完全对齐）。
+- **规范文档**：`docs/specs/`（architecture 模块职责 / data-model 表结构 / privacy 脱敏红线 / testing 测试口径）。
 - **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
+- 功能演进历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 项目结构（使用者视角）
 
