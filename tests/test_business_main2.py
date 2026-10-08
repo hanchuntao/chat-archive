@@ -234,7 +234,7 @@ def test_faq_draft_min_freq_filter():
     entries = [{"category": "发货/物流", "qa": [{"q": "多久到", "a": "1-3 天"}]},
                {"category": "发货/物流", "qa": [{"q": "多久到", "a": "1-3 天"}]},
                {"category": "退款/售后", "qa": [{"q": "多久退", "a": "1-3 天"}]}]
-    md, rows = biz.faq_draft(entries, min_freq=2)
+    _, rows = biz.faq_draft(entries, min_freq=2)
     assert len(rows) == 1  # 仅频次≥2 的问答
 
 
@@ -488,9 +488,9 @@ def test_sync_kb_internal_api(monkeypatch, tmp_path):
             "expired_time": 9999999999, "token": "t"}
     f = tmp_path / "a.md"
     f.write_text("# A", encoding="utf-8")
-    assert sk._cos_upload(cred, "k.md", f) is True
+    assert sk._cos_upload(cred, "k.md", f)[0] is True
     monkeypatch.setattr(ur, "urlopen", lambda req: (_ for _ in ()).throw(OSError()))
-    assert sk._cos_upload(cred, "k.md", f) is False
+    assert sk._cos_upload(cred, "k.md", f)[0] is False
 
     # _upload_file：create_media 失败
     monkeypatch.setattr(sk, "_ima_post", lambda *a, **k: {"code": -1, "msg": "no media"})
@@ -511,12 +511,12 @@ def test_sync_kb_internal_api(monkeypatch, tmp_path):
                                                            "secret_id": "id", "expired_time": 9999999999}}}
         return {"code": 0, "data": {}}
     monkeypatch.setattr(sk, "_ima_post", _ok_media)
-    monkeypatch.setattr(sk, "_cos_upload", lambda *a, **k: False)
+    monkeypatch.setattr(sk, "_cos_upload", lambda *a, **k: (False, "mock fail"))
     ok, msg = sk._upload_file("c", "k", "kb", f)
     assert not ok and "COS 上传失败" in msg
 
     # _upload_file：add_knowledge 失败
-    monkeypatch.setattr(sk, "_cos_upload", lambda *a, **k: True)
+    monkeypatch.setattr(sk, "_cos_upload", lambda *a, **k: (True, "ok"))
     def _add_fail(path, body, c, k):
         if path.endswith("add_knowledge"):
             return {"code": -1, "msg": "add failed"}
@@ -540,10 +540,12 @@ def test_sync_kb_run_and_main(tmp_path, monkeypatch):
     out = tmp_path / "out"
     (out / "knowledge").mkdir(parents=True)
     (out / "knowledge" / "a.md").write_text("# A", encoding="utf-8")
-    # run()：local + ima 未配 Key
+    # run()：local + ima 未配 Key（隔离本地密钥，不碰真实 ima）
+    monkeypatch.setenv("CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG", "1")
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        sk.run(str(out), "", "all")
+        sk.run(str(out), str(tmp_path / "config.json"), "all")
     txt = buf.getvalue()
     assert "本地" in txt and "未配置 API Key" in txt
     # run()：ima 已配 Key 但定位失败 → exit 1
@@ -666,3 +668,34 @@ def test_render_html_branches(tmp_path):
         assert token in html, f"{token} 未渲染"
     # assessment_notes 超长截断
     assert "…（截断" in html
+
+
+def test_sync_ima_idempotent(tmp_path, monkeypatch):
+    """同批次重跑：内容未变文件跳过（ima add_knowledge 不幂等，客户端需去重）。"""
+    sk = _load_script("sync_kb.py", "ca_sync_kb4")
+    out = tmp_path / "out"
+    (out / "knowledge").mkdir(parents=True)
+    for i in range(2):
+        (out / "knowledge" / f"f{i}.md").write_text(f"# Doc {i}", encoding="utf-8")
+    cfg = {"ima": {"client_id": "c", "api_key": "k", "knowledge_base_name": "KB"}}
+    calls = []
+    def _post(path, body, c, k):
+        calls.append(path)
+        if path.endswith("search_knowledge_base"):
+            return {"code": 0, "data": {"info_list": [{"kb_id": "kb9", "kb_name": "KB"}]}}
+        if path.endswith("get_addable_knowledge_base_list"):
+            return {"code": 0, "data": {"addable_knowledge_base_list": []}}
+        if path.endswith("create_media"):
+            return {"code": 0, "data": {"media_id": "m1", "cos_credential": {
+                "bucket_name": "b", "region": "r", "secret_key": "sk", "secret_id": "id",
+                "start_time": 100, "expired_time": 200, "token": "t", "cos_key": "k"}}}
+        return {"code": 0, "data": {}}
+    monkeypatch.setattr(sk, "_ima_post", _post)
+    monkeypatch.setattr(sk, "_cos_upload", lambda *a, **k: (True, "ok"))
+    r1 = sk.sync_ima(out, cfg)
+    assert "上传完成 2/2" in r1 and "跳过" not in r1
+    r2 = sk.sync_ima(out, cfg)
+    assert "上传完成 0/2" in r2 and "跳过 2 个未变文件" in r2
+    # 首次 2 次 create_media + 2 次 add_knowledge；重跑不再新增
+    assert sum(1 for p in calls if p.endswith("create_media")) == 2
+    assert sum(1 for p in calls if p.endswith("add_knowledge")) == 2

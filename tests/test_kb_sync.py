@@ -93,3 +93,20 @@ def test_config_local_override(tmp_path, monkeypatch):
     assert merged["llm"]["base_url"] == "https://x"
     assert merged["defaults"]["input"] == "y"      # 标量覆盖
     assert merged["defaults"]["staff"] == "all"    # 未覆盖保留
+
+
+def test_cos_sign_with_headers():
+    """COS 签名带 x-cos-security-token 时，header-list 与 http_string 同步签入。"""
+    secret = "sk-test-123"
+    cos_key = "kb/t.md"
+    host = "bucket-1250000000.cos.ap-guangzhou.myqcloud.com"
+    key_time = "1700000000;1700000600"
+    token = "abc+def/g="
+    got = sync_kb._cos_sign(secret, cos_key, host, key_time, f"x-cos-security-token={token}")
+
+    sign_key = hmac.new(secret.encode(), key_time.encode(), hashlib.sha1).hexdigest()
+    http_string = f"put\n/{cos_key}\n\nhost={host}&x-cos-security-token={token}\n"
+    string_to_sign = f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}\n"
+    assert got == hmac.new(sign_key.encode(), string_to_sign.encode(), hashlib.sha1).hexdigest()
+    # 默认无 headers 时行为不变（兼容既有调用）
+    assert sync_kb._cos_sign(secret, cos_key, host, key_time) == sync_kb._cos_sign(secret, cos_key, host, key_time, "")

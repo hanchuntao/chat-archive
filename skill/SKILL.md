@@ -167,7 +167,7 @@ python3 <skill_dir>/scripts/chat_archive.py all \
 
 ## 第5轮吸收（生产就绪 + 商业化能力）
 
-- **kb-sync 知识库同步**：本地目录 / 腾讯 ima 双通道。未配 Key 时自动导出 `out/ima_export/`（脱敏 .md + 导入说明）供手动导入；配 Key 走 COS 签名直传。`--out` 传结果根即可（自动定位最新批次）。
+- **kb-sync 知识库同步**：本地目录 / 腾讯 ima 双通道（已实测真实上传 5/5 成功）。未配 Key 时自动导出 `out/ima_export/` 供手动导入；配 Key（放 `config.local.json`）走 COS 签名直传。`--out` 传结果根即可。
 - **通知触达**：`all` 完成后自动推送事件摘要——钉钉（官方 HMAC 签名）/ 企业微信 / 自定义 URL（带 `X-Chat-Archive-Signature` 验签头）/ SMTP 邮件。
 - **LLM 提炼**：`--llm` 开关 + `config.json` 的 `llm` 段（或环境变量 `CHAT_ARCHIVE_LLM_BASE_URL/API_KEY/MODEL` 覆盖，本地地址自动绕过代理）。未配置时规则版照常产出，不阻塞。
 - **config.local.json**：真实密钥/路径写这里（已 gitignore），程序深合并覆盖 `config.json`，密钥不入库。

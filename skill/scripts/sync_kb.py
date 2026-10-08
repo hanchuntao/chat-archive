@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import hmac
 import json
+import os
 import shutil
 import sys
 import time
@@ -39,9 +40,10 @@ def load_config(cfg_path: str | None) -> dict:
                 data = raw
         except Exception:
             pass
-    # config.local.json 个人覆盖层（真实 API Key 等不入库）：任何 config.json 均读其伴生 local
+    # config.local.json 个人覆盖层（真实 API Key 等不入库）：任何 config.json 均读其伴生 local。
+    # 设 CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG=1 可跳过（测试/CI 隔离真实密钥）。
     local_path = path.with_name("config.local.json")
-    if local_path.exists():
+    if local_path.exists() and os.environ.get("CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG") != "1":
         try:
             raw_local = json.loads(local_path.read_text(encoding="utf-8"))
             if isinstance(raw_local, dict):
@@ -135,6 +137,16 @@ def _ima_post(path: str, body: dict, client_id: str, api_key: str) -> dict:
     return data
 
 
+def _kb_name(kb: dict) -> str:
+    """知识库名字段兼容：search 返回 kb_name，addable 返回 name。"""
+    return str(kb.get("name") or kb.get("kb_name") or "")
+
+
+def _kb_id(kb: dict) -> str:
+    """知识库 ID 字段兼容：search 返回 kb_id，addable 返回 id。"""
+    return str(kb.get("id") or kb.get("kb_id") or "")
+
+
 def _find_knowledge_base(client_id: str, api_key: str, name: str) -> tuple[str | None, str | None]:
     """按名称定位知识库 ID；返回 (kb_id 或 None, 错误信息或 None)。认证/API 错误明确报出。"""
     if name:
@@ -144,36 +156,53 @@ def _find_knowledge_base(client_id: str, api_key: str, name: str) -> tuple[str |
             return None, (f"ima API 错误（code={resp.get('code')}）：{resp.get('msg')}"
                           "（检查 API Key / Client ID 是否有效，生成页 https://ima.qq.com/agent-interface）")
         for kb in resp.get("data", {}).get("info_list", []):
-            if kb.get("name") == name:
-                return kb["id"], None
+            if _kb_name(kb) == name:
+                return _kb_id(kb), None
     resp = _ima_post("/get_addable_knowledge_base_list",
                      {"cursor": "", "limit": 50}, client_id, api_key)
     if resp.get("code") != 0:
         return None, (f"ima API 错误（code={resp.get('code')}）：{resp.get('msg')}"
                       "（检查 API Key / Client ID 是否有效，生成页 https://ima.qq.com/agent-interface）")
     lst = resp.get("data", {}).get("addable_knowledge_base_list", [])
+    for kb in lst:
+        if name and _kb_name(kb) == name:
+            return _kb_id(kb), None
     if lst and not name:
         print("可添加的知识库：")
         for kb in lst:
-            print(f"  - {kb.get('name')} (id={kb.get('id')})")
+            print(f"  - {_kb_name(kb)}")
         print('请在 config.json 的 knowledge.ima.knowledge_base_name 中指定其一。')
     return None, None
 
 
-def _cos_sign(secret_key: str, cos_key: str, host: str, key_time: str) -> str:
+def _cos_sign(secret_key: str, cos_key: str, host: str, key_time: str,
+              headers: str = "") -> str:
+    """腾讯云 COS 签名 v1；headers 为追加签名项（如 x-cos-security-token=xxx），
+    按 COS 规范用 & 连接并逐项签入（header-list 需同步声明）。"""
     sign_key = hmac.new(secret_key.encode(), key_time.encode(), hashlib.sha1).hexdigest()
-    http_string = f"put\n/{cos_key}\n\nhost={host}\n"
+    hdr = f"host={host}" + (f"&{headers}" if headers else "")
+    http_string = f"put\n/{cos_key}\n\n{hdr}\n"
     string_to_sign = f"sha1\n{key_time}\n{hashlib.sha1(http_string.encode()).hexdigest()}\n"
     return hmac.new(sign_key.encode(), string_to_sign.encode(), hashlib.sha1).hexdigest()
 
 
-def _cos_upload(cred: dict, cos_key: str, file_path: Path) -> bool:
-    host = cred.get("custom_domain") or f"{cred.get('bucket_name')}.cos.{cred.get('region')}.myqcloud.com"
-    now = int(time.time())
-    key_time = f"{now};{cred.get('expired_time', now + 600)}"
-    signature = _cos_sign(cred.get("secret_key", ""), cos_key, host, key_time)
+def _cos_upload(cred: dict, cos_key: str, file_path: Path) -> tuple[bool, str]:
+    """上传到 COS 预签名 URL；返回 (是否成功, 消息)。签名窗口用凭证 start_time;expired_time，
+    host 用标准 COS 域名（实测 custom_domain 会 InvalidAccessKeyId），token 必须签入。"""
+    host = f"{cred.get('bucket_name')}.cos.{cred.get('region')}.myqcloud.com"
+    token = cred.get("token") or ""
+    start = cred.get("start_time")
+    expired = cred.get("expired_time")
+    if start and expired:
+        key_time = f"{start};{expired}"
+    else:
+        now = int(time.time())
+        key_time = f"{now};{expired or now + 600}"
+    header_list = "host" + (";x-cos-security-token" if token else "")
+    headers = f"x-cos-security-token={token}" if token else ""
+    signature = _cos_sign(cred.get("secret_key", ""), cos_key, host, key_time, headers)
     auth = (f"q-sign-algorithm=sha1&q-ak={cred.get('secret_id')}&q-sign-time={key_time}"
-            f"&q-key-time={key_time}&q-header-list=host&q-url-param-list=&q-signature={signature}")
+            f"&q-key-time={key_time}&q-header-list={header_list}&q-url-param-list=&q-signature={signature}")
     data = file_path.read_bytes()
     req = urllib.request.Request(
         f"https://{host}/{cos_key}",
@@ -181,16 +210,18 @@ def _cos_upload(cred: dict, cos_key: str, file_path: Path) -> bool:
         headers={
             "Host": host,
             "Authorization": auth,
-            "x-cos-security-token": cred.get("token", ""),
+            "x-cos-security-token": token,
             "Content-Type": "text/markdown",
-            "Content-Length": str(len(data)),
         },
         method="PUT")
     try:
         with urllib.request.urlopen(req, timeout=120) as resp:
-            return resp.status in (200, 204)
-    except Exception:
-        return False
+            return resp.status in (200, 204), f"HTTP {resp.status}"
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:300]
+        return False, f"COS HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, f"COS 上传异常: {e}"
 
 
 def _upload_file(client_id: str, api_key: str, kb_id: str, path: Path, folder_id: str = "") -> tuple[bool, str]:
@@ -207,8 +238,9 @@ def _upload_file(client_id: str, api_key: str, kb_id: str, path: Path, folder_id
     cred = data.get("cos_credential", {})
     if not cred:
         return False, "未返回 COS 凭证"
-    if not _cos_upload(cred, cred.get("cos_key", ""), path):
-        return False, "COS 上传失败"
+    ok_up, up_msg = _cos_upload(cred, cred.get("cos_key", ""), path)
+    if not ok_up:
+        return False, f"COS 上传失败（{up_msg}）"
     finfo = {"cos_key": cred.get("cos_key", ""), "file_size": size,
              "last_modify_time": int(time.time()), "file_name": path.name}
     body = {"media_type": 7, "media_id": media_id, "title": path.stem,
@@ -238,14 +270,32 @@ def sync_ima(out: Path, cfg: dict) -> str:
     if not kb_id:
         raise RuntimeError("ima：未能定位知识库（检查 knowledge_base_name，或按上方列表填写）")
     files = sorted(src.glob("*.md"))
-    ok, fail = 0, []
+    # 幂等 state：记录已上传文件的内容 hash；同批次重跑未变文件跳过（ima add_knowledge 不幂等，实测重跑会重复入库）
+    state_path = src / ".ima_sync_state.json"
+    state: dict = {}
+    if state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+    ok, skipped, fail = 0, 0, []
     for f in files:
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        if state.get(f.name, {}).get("sha256") == digest:
+            skipped += 1
+            continue
         succ, msg = _upload_file(client_id, api_key, kb_id, f, folder_id)
         if succ:
             ok += 1
+            state[f.name] = {"sha256": digest, "media_id": msg if msg.startswith("media") else ""}
         else:
             fail.append(f"{f.name}: {msg}")
-    report = f"ima：上传完成 {ok}/{len(files)} 个文件 → 知识库「{kb_name or kb_id}」"
+    try:
+        state_path.write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception:
+        pass
+    suffix = f"（跳过 {skipped} 个未变文件）" if skipped else ""
+    report = f"ima：上传完成 {ok}/{len(files)} 个文件 → 知识库「{kb_name or kb_id}」{suffix}"
     if fail:
         report += "\n失败：" + "\n".join(fail)
     return report

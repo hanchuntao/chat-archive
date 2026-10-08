@@ -494,7 +494,7 @@ chat-archive report --start 2026-09-01 --end 2026-09-07 -o weekly.md
 - `latest`：每次运行后自动更新 `out/latest_report.html`（最新看板固定入口）+ `out/latest.txt`（最新结果目录名），路径固定可收藏
 - `assessment`：**考核方案与合规规则**（基准分/超时扣分/违规扣分/口水阈值/加分等 + `rules` 违规话术清单），改这里即改考核制度；命令行 `--scheme`/`--rules-file` 可临时覆盖，优先级更高
 - `knowledge.local.dir`：本地知识库目录，**可填 Obsidian vault 路径等任意绝对路径**（见下节）。
-- `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成。
+- `knowledge.ima`：腾讯 ima 凭证，在 https://ima.qq.com/agent-interface 生成（**只放 `config.local.json`**，见文末「密钥隔离」提示）。
 
 ## 打包分发（给同事/客户免安装用）
 
@@ -529,7 +529,7 @@ config.json `webhook` 段配置后，每次 `all` 完成自动推送事件摘要
 |---|---|---|
 | 本地 | `knowledge.local.enabled`（默认 true，`dir: knowledge`） | 产物就在 `out/knowledge/`，`dir` 可改绝对路径 |
 | 本地·向量（子选项） | `knowledge.local.vector.enabled`（需 `pip install chromadb`） | 开启后由 CLI `vectorize` 建本地语义检索库 |
-| 腾讯 ima | `knowledge.ima.enabled` + `api_key` + `client_id` | 自动上传脱敏 .md 到指定知识库；未配 Key 时导出 `out/ima_export/` 供手动导入；配了无效 Key（认证失败/网络错误）明确报错并返回退出码 1 |
+| 腾讯 ima | `knowledge.ima.enabled` + `api_key` + `client_id` | 自动上传脱敏 .md 到指定知识库；**已实测真实链路 5/5 上传成功**（知识库侧 content_count 实时增加）；重跑同批次内容未变文件自动跳过（SHA256 幂等，ima 无去重 API）；未配 Key 时导出 `out/ima_export/` 供手动导入；配了无效 Key 明确报错并返回退出码 1 |
 
 ```bash
 # 一键同步（按配置）
