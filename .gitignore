@@ -22,3 +22,7 @@ htmlcov/
 config.local.json
 build/
 dist/
+
+# 静态检查缓存
+.mypy_cache/
+.ruff_cache/

@@ -156,7 +156,7 @@ python3 -m pytest tests/ -q
 - **生产就绪（第 9 轮）**：ruff 1576→0 + mypy 门禁；LLM 提炼真实链路（本地 mock OpenAI 17 次请求验证鉴权/脱敏提示词）；webhook/email 真实发送（本地双接收端实测，Webhook 200/40 事件）；watch 4 分钟压测内存 1.00x 无泄漏 + 优雅退出（SIGINT/SIGTERM）；mcp --db 增量库幂等（591 插入→0 插入 606 跳过）；PyInstaller 真打包 23MB onedir 全套冒烟；kb-sync/ima 链路闭环（local 就地/复制、ima 未配 Key 降级导出）；Windows 静态兼容审计（显式 UTF-8/控制台重配置/子进程编码）。
 - **ima 真实链路（第 10 轮）**：真实 API 上传 5/5 成功、知识库侧 content_count 实时增加；search/addable 字段不一致兼容（kb_id/kb_name vs id/name）；COS 标准域名签名 + token 签入（custom_domain 实测 403）；签名窗口用凭证 start_time;expired_time；错误透传 HTTP 响应体；同批次重跑内容未变自动跳过（SHA256 幂等 state，ima 无去重 API）；测试/CI 用 `CHAT_ARCHIVE_IGNORE_LOCAL_CONFIG=1` 隔离真实密钥。
 - **三重路径交叉验证**：同一输入（`sample_data/ecom_chat.txt`）在 A=数据层 CLI（init/import/search/stats/info/backup）、B=业务层 `all` 全流程产物、C=单元级直调 三路断点一致（员工消息数完全对齐）。
-- **规范文档**：`specs/architecture.md`（模块职责与主流软件对齐）、`specs/data-model.md`（SQLite 表结构与 FTS5）、`specs/privacy.md`（脱敏/合规红线）、`specs/testing.md`（测试策略与覆盖率口径）。
+- **规范文档**：`docs/specs/architecture.md`（模块职责与主流软件对齐）、`docs/specs/data-model.md`（SQLite 表结构与 FTS5）、`docs/specs/privacy.md`（脱敏/合规红线）、`docs/specs/testing.md`（测试策略与覆盖率口径）。
 - **CI**：`.github/workflows/ci.yml`（Python 3.10/3.11/3.12 × pytest + 覆盖率门禁）。
 
 ## 项目结构（使用者视角）
