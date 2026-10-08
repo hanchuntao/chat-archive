@@ -135,15 +135,23 @@ wechat-cli / WeFlow JSON
 **skill 源在仓库 `.claude/skills/chat-archive/`（真实目录，git 跟踪）**——这是 Claude Code 的原生项目级技能目录，
 **clone 仓库后 Claude Code 自动发现，无需任何安装**。
 
-其它工具用符号链接挂到同一份源（改一处全生效）。**新机器 clone 后跑一次 `bash scripts/setup-skills.sh` 即可**（幂等，已存在的跳过）：
+其它工具用符号链接挂到同一份源（改一处全生效）。**脚本按需指定，装了什么就挂什么**（幂等，已存在的跳过）：
+
+```bash
+bash scripts/setup-skills.sh            # 只挂仓库内（.deepcode + skill，跟随仓库走）
+bash scripts/setup-skills.sh codex      # 挂 Codex
+bash scripts/setup-skills.sh doubao     # 挂豆包（按平台自动探测目录）
+bash scripts/setup-skills.sh codex deepseek workbuddy doubao   # 组合
+bash scripts/setup-skills.sh all        # 全部
+```
 
 | 工具 | 挂载方式 | 命令行可用 |
 |---|---|---|
-| Claude Code | `.claude/skills/chat-archive`（真实目录，clone 即用） | **是** |
-| Codex | `~/.codex/skills/chat-archive`（脚本自动挂） | **是** |
-| DeepSeek | `~/.agents/skills/chat-archive`（GUI）+ `./.deepcode/skills/chat-archive`（IDE，脚本自动挂） | 否（对话触发） |
-| WorkBuddy | `~/.workbuddy/skills/chat-archive`（脚本自动挂） | 否（对话触发） |
-| 豆包 | 豆包应用数据目录 `.user_skills/chat-archive`（**脚本按平台自动探测并挂载**：macOS/Windows/Linux 各自候选目录，真实存在才挂，探测不到才打印提示） | 否（对话触发） |
+| Claude Code | `.claude/skills/chat-archive`（真实目录，clone 即用，无需挂载） | **是** |
+| Codex | `~/.codex/skills/chat-archive`（`setup-skills.sh codex`） | **是** |
+| DeepSeek | `~/.agents/skills/chat-archive`（GUI，`setup-skills.sh deepseek`）+ `./.deepcode/skills/chat-archive`（IDE，默认挂） | 否（对话触发） |
+| WorkBuddy | `~/.workbuddy/skills/chat-archive`（`setup-skills.sh workbuddy`） | 否（对话触发） |
+| 豆包 | 豆包应用数据目录 `.user_skills/chat-archive`（`setup-skills.sh doubao`，脚本按平台自动探测：macOS/Windows/Linux 各自候选目录，真实存在才挂，探测不到才打印提示） | 否（对话触发） |
 
 **命令行可用性说明**：能直接用的是 Claude Code（项目内）和 Codex（全局）；豆包/WorkBuddy/DeepSeek 桌面版没有 CLI，skill 只在各自对话里生效——想让它们在命令行干活，把 `base_url`+`api_key` 填进 `config.json` 的 `llm` 段即可（AI 提炼全走该模型）。无论哪种入口，产物一致。
 
