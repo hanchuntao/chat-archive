@@ -143,11 +143,11 @@ wechat-cli / WeFlow JSON
 | Codex | `~/.codex/skills/chat-archive`（脚本自动挂） | **是** |
 | DeepSeek | `~/.agents/skills/chat-archive`（GUI）+ `./.deepcode/skills/chat-archive`（IDE，脚本自动挂） | 否（对话触发） |
 | WorkBuddy | `~/.workbuddy/skills/chat-archive`（脚本自动挂） | 否（对话触发） |
-| 豆包 | 豆包应用数据目录 `.user_skills/chat-archive`（路径因机器而异，脚本尾部有提示，Windows 见 [docs/高级用法.md](docs/高级用法.md)） | 否（对话触发） |
+| 豆包 | 豆包应用数据目录 `.user_skills/chat-archive`（**脚本按平台自动探测并挂载**：macOS/Windows/Linux 各自候选目录，真实存在才挂，探测不到才打印提示） | 否（对话触发） |
 
 **命令行可用性说明**：能直接用的是 Claude Code（项目内）和 Codex（全局）；豆包/WorkBuddy/DeepSeek 桌面版没有 CLI，skill 只在各自对话里生效——想让它们在命令行干活，把 `base_url`+`api_key` 填进 `config.json` 的 `llm` 段即可（AI 提炼全走该模型）。无论哪种入口，产物一致。
 
-`SKILL.md` 是唯一源，改它即改所有工具行为。业务脚本 `scripts/chat_archive.py` 复用 CLI 脱敏规则引擎，PII 规则全局唯一。
+`SKILL.md` 是唯一源，改它即改所有工具行为。业务脚本 `.claude/skills/chat-archive/scripts/chat_archive.py` 复用 CLI 脱敏规则引擎，PII 规则全局唯一（仓库根 `skill/` 符号链接指向该目录，`skill/scripts/...` 路径同样可用）。
 
 ## AI Skills 用法（在豆包 / Claude / Codex / WorkBuddy / DeepSeek 里）
 
